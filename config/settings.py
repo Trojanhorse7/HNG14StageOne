@@ -1,6 +1,6 @@
 """Django settings for gender classification API (stateless — no ORM / DB file)."""
 
-SECRET_KEY = "django-insecure-change-me-in-production-use-env"
+SECRET_KEY = "mtsecret"
 
 DEBUG = True
 

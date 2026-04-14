@@ -1,8 +1,17 @@
-"""Django settings for gender classification API (stateless — no ORM / DB file)."""
+"""Django settings — Stage 1 profiles API with PostgreSQL."""
 
-SECRET_KEY = "mtsecret"
+import os
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-DEBUG = True
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "mtsecret")
+
+DEBUG = os.environ.get("DEBUG", "true").lower() in ("1", "true", "yes")
 
 ALLOWED_HOSTS: list[str] = ["*"]
 
@@ -26,12 +35,37 @@ TEMPLATES: list[dict] = []
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-# No SQLite or migrations — this app does not use the database.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.dummy",
+_default_db_url = os.environ.get("DATABASE_URL", "").strip()
+
+if _default_db_url:
+    parsed = urlparse(_default_db_url)
+    db_name = (parsed.path or "").lstrip("/")
+    query = parse_qs(parsed.query)
+    ssl_modes = query.get("sslmode") or query.get("ssl")
+    db_options: dict = {}
+    if ssl_modes and ssl_modes[0]:
+        db_options["sslmode"] = ssl_modes[0]
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": db_name or "postgres",
+            "USER": parsed.username or "",
+            "PASSWORD": parsed.password or "",
+            "HOST": parsed.hostname or "localhost",
+            "PORT": str(parsed.port or 5432),
+            "CONN_MAX_AGE": 60,
+            **({"OPTIONS": db_options} if db_options else {}),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": os.path.join(os.path.dirname(os.path.dirname(__file__)), "db.sqlite3"),
+        }
+    }
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_PASSWORD_VALIDATORS: list[dict] = []
 

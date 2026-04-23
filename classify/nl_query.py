@@ -46,7 +46,9 @@ def _country_id_from_text(norm_q: str) -> str | None:
         if len(words) == 1:
             pat = rf"(?<!\w){re.escape(words[0])}(?!\w)"
         else:
-            pat = rf"(?<!\w){r'\W+'.join(re.escape(w) for w in words)}(?!\w)"
+            # Build outside f-string: f-string expressions cannot contain backslashes (PEP 498).
+            middle = r"\W+".join(re.escape(w) for w in words)
+            pat = rf"(?<!\w){middle}(?!\w)"
         if re.search(pat, norm_q, flags=re.IGNORECASE):
             return cid
     return None

@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from classify.country_data import country_name_for_id
+
 GENDERIZE_URL = "https://api.genderize.io/"
 AGIFY_URL = "https://api.agify.io/"
 NATIONALIZE_URL = "https://api.nationalize.io/"
@@ -16,10 +18,10 @@ NATIONALIZE_URL = "https://api.nationalize.io/"
 class AggregatedProfile:
     gender: str
     gender_probability: float
-    sample_size: int
     age: int
     age_group: str
     country_id: str
+    country_name: str
     country_probability: float
 
 
@@ -67,7 +69,7 @@ def aggregate_for_name(name: str) -> tuple[AggregatedProfile | None, dict[str, s
         return None, _invalid_response_error("Genderize")
     try:
         gender_probability = float(g_prob)
-        sample_size = int(g_count)
+        int(g_count)  # validate
     except (TypeError, ValueError):
         return None, _invalid_response_error("Genderize")
 
@@ -111,15 +113,18 @@ def aggregate_for_name(name: str) -> tuple[AggregatedProfile | None, dict[str, s
 
     country_id = str(best["country_id"]).upper()
     gender_s = str(gender).lower()
+    cname = country_name_for_id(country_id)
+    if cname is None:
+        cname = country_id
 
     return (
         AggregatedProfile(
             gender=gender_s,
             gender_probability=gender_probability,
-            sample_size=sample_size,
             age=age_i,
             age_group=_age_group(age_i),
             country_id=country_id,
+            country_name=cname,
             country_probability=best_p,
         ),
         None,

@@ -42,7 +42,10 @@ if _default_db_url:
     db_name = (parsed.path or "").lstrip("/")
     query = parse_qs(parsed.query)
     ssl_modes = query.get("sslmode") or query.get("ssl")
-    db_options: dict = {}
+    # libpq: request no statement timeout on connect. Many hosts still cap; seed also uses tiny batches.
+    db_options: dict = {
+        "options": "-c statement_timeout=0 -c lock_timeout=0",
+    }
     if ssl_modes and ssl_modes[0]:
         db_options["sslmode"] = ssl_modes[0]
     DATABASES = {
@@ -54,7 +57,7 @@ if _default_db_url:
             "HOST": parsed.hostname or "localhost",
             "PORT": str(parsed.port or 5432),
             "CONN_MAX_AGE": 60,
-            **({"OPTIONS": db_options} if db_options else {}),
+            "OPTIONS": db_options,
         }
     }
 else:

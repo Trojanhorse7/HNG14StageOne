@@ -12,11 +12,21 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from classify.models import Profile
+from classify.nl_query import parse_nl_query
+from classify.profile_filters import (
+    ERR_BAD_REQUEST,
+    ERR_INVALID_QUERY,
+    apply_filters,
+    apply_sort,
+    parse_list_query_params,
+    parse_search_query_params,
+)
 from classify.profile_service import aggregate_for_name
 
 ERR_MISSING_NAME = "Missing or empty name"
 ERR_NAME_TYPE = "Invalid type"
 ERR_NOT_FOUND = "Profile not found"
+ERR_UNABLE_INTERPRET = "Unable to interpret query"
 
 
 def _utc_iso_z(dt: datetime) -> str:
@@ -33,23 +43,12 @@ def _full_profile_dict(p: Profile) -> dict:
         "name": p.name,
         "gender": p.gender,
         "gender_probability": p.gender_probability,
-        "sample_size": p.sample_size,
         "age": p.age,
         "age_group": p.age_group,
         "country_id": p.country_id,
+        "country_name": p.country_name,
         "country_probability": p.country_probability,
         "created_at": _utc_iso_z(p.created_at),
-    }
-
-
-def _list_item_dict(p: Profile) -> dict:
-    return {
-        "id": str(p.id),
-        "name": p.name,
-        "gender": p.gender,
-        "age": p.age,
-        "age_group": p.age_group,
-        "country_id": p.country_id,
     }
 
 
@@ -89,19 +88,43 @@ class ProfileListCreateView(APIView):
     permission_classes: list = []
 
     def get(self, request: Request) -> Response:
+        try:
+            parsed = parse_list_query_params(request.query_params)
+        except ValueError as e:
+            return Response(
+                {"status": "error", "message": str(e) or ERR_INVALID_QUERY},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        page = int(parsed.get("page", 1))
+        limit = int(parsed.get("limit", 10))
+        sort_by = str(parsed.get("sort_by", "created_at"))
+        order = str(parsed.get("order", "desc"))
+
+        filter_keys = (
+            "gender",
+            "age_group",
+            "country_id",
+            "min_age",
+            "max_age",
+            "min_gender_probability",
+            "min_country_probability",
+        )
+        fdict = {k: parsed[k] for k in filter_keys if k in parsed}
+
         qs = Profile.objects.all()
-        gender = request.query_params.get("gender")
-        country_id = request.query_params.get("country_id")
-        age_group = request.query_params.get("age_group")
-        if gender:
-            qs = qs.filter(gender__iexact=gender.strip())
-        if country_id:
-            qs = qs.filter(country_id__iexact=country_id.strip())
-        if age_group:
-            qs = qs.filter(age_group__iexact=age_group.strip())
-        items = [_list_item_dict(p) for p in qs]
+        qs = apply_filters(qs, fdict)
+        total = qs.count()
+        qs = apply_sort(qs, sort_by, order)
+        start = (page - 1) * limit
+        rows = list(qs[start : start + limit])
         return Response(
-            {"status": "success", "count": len(items), "data": items},
+            {
+                "status": "success",
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "data": [_full_profile_dict(p) for p in rows],
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -110,8 +133,7 @@ class ProfileListCreateView(APIView):
         if err:
             return err
 
-        key = name.lower()
-        existing = Profile.objects.filter(name_normalized=key).first()
+        existing = Profile.objects.filter(name=name).first()
         if existing:
             return Response(
                 {
@@ -124,29 +146,32 @@ class ProfileListCreateView(APIView):
 
         aggregated, upstream_err = aggregate_for_name(name)
         if upstream_err:
-            return Response(upstream_err, status=status.HTTP_502_BAD_GATEWAY)
+            msg = upstream_err.get("message", "Upstream error")
+            return Response(
+                {"status": "error", "message": msg},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         try:
             with transaction.atomic():
                 profile = Profile.objects.create(
                     name=name,
-                    name_normalized=key,
                     gender=aggregated.gender,
                     gender_probability=aggregated.gender_probability,
-                    sample_size=aggregated.sample_size,
                     age=aggregated.age,
                     age_group=aggregated.age_group,
                     country_id=aggregated.country_id,
+                    country_name=aggregated.country_name,
                     country_probability=aggregated.country_probability,
                 )
         except IntegrityError:
-            existing = Profile.objects.filter(name_normalized=key).first()
-            if existing:
+            again = Profile.objects.filter(name=name).first()
+            if again:
                 return Response(
                     {
                         "status": "success",
                         "message": "Profile already exists",
-                        "data": _full_profile_dict(existing),
+                        "data": _full_profile_dict(again),
                     },
                     status=status.HTTP_200_OK,
                 )
@@ -158,6 +183,54 @@ class ProfileListCreateView(APIView):
         return Response(
             {"status": "success", "data": _full_profile_dict(profile)},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class ProfileSearchView(APIView):
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request: Request) -> Response:
+        try:
+            parsed = parse_search_query_params(request.query_params)
+        except ValueError as e:
+            return Response(
+                {"status": "error", "message": str(e) or ERR_INVALID_QUERY},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        q = parsed.get("q")
+        if q is None or str(q).strip() == "":
+            return Response(
+                {"status": "error", "message": ERR_BAD_REQUEST},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        page = int(parsed.get("page", 1))
+        limit = int(parsed.get("limit", 10))
+        sort_by = "created_at"
+        order = "desc"
+
+        flt = parse_nl_query(str(q))
+        if flt is None:
+            return Response(
+                {"status": "error", "message": ERR_UNABLE_INTERPRET},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        qs = Profile.objects.all()
+        qs = apply_filters(qs, flt)
+        total = qs.count()
+        qs = apply_sort(qs, sort_by, order)
+        start = (page - 1) * limit
+        rows = list(qs[start : start + limit])
+        return Response(
+            {
+                "status": "success",
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "data": [_full_profile_dict(p) for p in rows],
+            },
+            status=status.HTTP_200_OK,
         )
 
 

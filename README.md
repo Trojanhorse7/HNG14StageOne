@@ -1,6 +1,8 @@
-# Insighta Labs — demographic profiles API (HNG Stage 1)
+# Insighta Labs+ — profiles API (HNG Stage 1–3)
 
-Django + Django REST Framework service with a `Profile` model (`UUID` v7 primary keys), PostgreSQL or SQLite, open CORS for grading scripts, and rule-based natural-language search (no LLMs).
+Django + Django REST Framework: **`Profile`** model (UUID v7), PostgreSQL or SQLite, **GitHub OAuth + JWT** (Bearer or **http-only cookies**), **RBAC**, **CSRF** for browser writes, rule-based natural-language search (no LLMs), **CSV export**, and **rate limits**.
+
+Companion clients: **`insighta-frontend`** (Vite SPA) and **`insighta-cli`** (Typer); they use the same API and permissions.
 
 ## Setup
 
@@ -10,129 +12,166 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Set `DATABASE_URL` (PostgreSQL) in `.env`, or leave it unset to use `db.sqlite3` in the project root. See [`.env.example`](.env.example) for the variables this project reads.
+Copy [`.env.example`](.env.example) to `.env` and set at least **`DJANGO_SECRET_KEY`** (use a long random value; optional **`JWT_SIGNING_KEY`** for HS256). Set **`GITHUB_CLIENT_ID`** / **`GITHUB_CLIENT_SECRET`**, **`BACKEND_PUBLIC_URL`**, and **`WEB_PORTAL_ORIGIN`** for OAuth redirects and CORS/CSRF.
 
 ```bash
 python manage.py migrate
-python manage.py seed_profiles
+python manage.py seed_profiles   # optional; reads seed_profiles.json
 python manage.py runserver 0.0.0.0:8000
 ```
 
-`seed_profiles` reads `seed_profiles.json` at the project root. Re-running it **updates** existing rows by unique `name` and does **not** create duplicates.
+`DATABASE_URL` selects Postgres; if unset, **`db.sqlite3`** in the project root is used.
 
-**Postgres performance:** seeding uses multi-row `INSERT` / `UPDATE` in batches. Default batch size is **250** (about nine statements for ~2k rows). Tune for your host:
+**`seed_profiles`:** re-running **updates** rows by unique `name`. Batching: `SEED_POSTGRES_BATCH` (default **250**), or `python manage.py seed_profiles --batch 500`.
 
-- `SEED_POSTGRES_BATCH=500` in the environment, or
-- `python manage.py seed_profiles --batch 500`
+---
 
-If a batch hits `statement_timeout`, the command halves the batch size and retries (same as before). Use a smaller `SEED_POSTGRES_BATCH` (e.g. 32) only on very strict serverless Postgres tiers.
+## Authentication & security
 
-## Endpoints
+| Mechanism | Notes |
+|-----------|--------|
+| **API version** | All **`/api/*`** requests must send **`X-API-Version: 1`** or the API returns **400** (`API version header required`). |
+| **JWT access** | `Authorization: Bearer <jwt>` **or** http-only cookie **`insighta_access`**. Never expose tokens to frontend JS except via cookie (portal uses cookies only). |
+| **Refresh (CLI / scripts)** | **`POST /auth/refresh`** JSON body: `{ "refresh_token": "<opaque>" }` — **CSRF-exempt** (machine clients). |
+| **Refresh (browser)** | **`POST /auth/refresh/web`** — reads **`insighta_refresh`** http-only cookie; **CSRF required** (`X-CSRFToken` + `csrftoken` cookie). Rotates and sets new cookies. |
+| **Logout (browser)** | **`POST /auth/logout/web`** — CSRF required; revokes refresh and clears cookies. |
+| **CSRF bootstrap** | **`GET /auth/csrf`** — ensures **`csrftoken`** is set for SPA clients. |
+| **Current user** | **`GET /auth/me`** — JWT required; returns `id`, `username`, `email`, `role`, `avatar_url`, `github_id`, `is_active`. |
+
+**GitHub OAuth (browser):**
+
+1. **`GET /auth/github`** — starts PKCE flow; GitHub redirects to **`{BACKEND_PUBLIC_URL}/auth/github/callback`**.
+2. Callback sets **`insighta_access`** / **`insighta_refresh`** (http-only) and redirects to **`WEB_PORTAL_ORIGIN`**.
+
+**CLI OAuth:** **`POST /auth/github/cli`** with `code`, `code_verifier`, `redirect_uri` (see CLI README).
+
+**RBAC:**
+
+- **Analyst:** `GET` profiles, classify, search, export.
+- **Admin:** same, plus **`POST /api/profiles`** and **`DELETE /api/profiles/{uuid}`** (`UserRole.ADMIN`).
+
+---
+
+## CORS & CSRF
+
+Browser clients that send **cookies** need aligned origins:
+
+- **`CORS_ALLOWED_ORIGINS`** is built from **`WEB_PORTAL_ORIGIN`**, common Vite URLs, and optional comma-separated **`CORS_EXTRA_ORIGINS`**.
+- **`CORS_ALLOW_CREDENTIALS = True`** (not `Access-Control-Allow-Origin: *` with credentials).
+- **`CSRF_TRUSTED_ORIGINS`** matches the same portal origins for cross-origin **`POST`** with cookies.
+
+Machine clients (CLI, curl with Bearer) are unaffected by CORS.
+
+---
+
+## Rate limiting & logging
+
+- **`/auth/*`:** **10** requests per minute per IP.
+- **`/api/*`:** **60** requests per minute per authenticated user (or per IP if anonymous).
+
+**429** response: `{ "status": "error", "message": "Too many requests" }`.
+
+Request timing and user id are logged at **INFO** (`accounts.rate_limit_middleware`).
+
+---
+
+## API endpoints (profiles & classify)
+
+Send **`X-API-Version: 1`** on every **`/api/*`** call. Authenticate with **Bearer** or session cookies.
 
 ### `GET /api/classify?name=...`
 
-Legacy name-classification proxy (Genderize). Response format unchanged from the earlier stage.
+Genderize-backed classification (legacy shape).
 
 ### `GET /api/profiles`
 
-List profiles with **filters**, **sorting**, and **pagination** in one request.
+List with **filters**, **sort**, **pagination**; optional **`total_pages`** and **`links`** (`self`, `next`, `prev`).
 
-**Query parameters (all optional; unknown parameters return 422 with `Invalid query parameters`):**
+Query parameters: same as before (`gender`, `age_group`, `country_id`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`, `sort_by`, `order`, `page`, `limit` ≤ 50). Unknown keys → **422**.
 
-| Parameter | Effect |
-|-----------|--------|
-| `gender` | Exact match (`male` / `female`) |
-| `age_group` | `child`, `teenager`, `adult`, `senior` |
-| `country_id` | Two-letter ISO code (e.g. `NG`) |
-| `min_age`, `max_age` | Inclusive age bounds |
-| `min_gender_probability`, `min_country_probability` | Lower bound (float) |
-| `sort_by` | `age` \| `created_at` \| `gender_probability` (default: `created_at`) |
-| `order` | `asc` \| `desc` (default: `desc`) |
-| `page` | 1-based (default: `1`) |
-| `limit` | Page size (default: `10`, max: `50`) |
+### `GET /api/profiles/export?format=csv&...`
 
-**Success (200):**
-
-```json
-{
-  "status": "success",
-  "page": 1,
-  "limit": 10,
-  "total": 2026,
-  "data": [ { "id", "name", "gender", "gender_probability", "age", "age_group", "country_id", "country_name", "country_probability", "created_at" } ]
-}
-```
-
-`created_at` is UTC, ISO 8601 with `Z`.
+Streaming CSV with the **same filter/sort parameters** as list (no pagination). Filename includes timestamp.
 
 ### `GET /api/profiles/search?q=...&page=...&limit=...`
 
-Runs the **rule-based** parser on `q`, applies the result as the same filters as `GET /api/profiles`, and returns the same list payload. Pagination defaults match the list route.
+Rule-based NL parser on `q`; same list payload shape as **`GET /api/profiles`**. Uninterpretable query → **422** (`Unable to interpret query`).
 
-If the string cannot be mapped to at least one filter, the response is **422** with:
+### `GET /api/profiles/{uuid}`
 
-```json
-{ "status": "error", "message": "Unable to interpret query" }
-```
-
-If `q` is missing or empty: **400** with `Missing or empty parameter`.
-
-### `GET /api/profiles/{uuid}` / `DELETE /api/profiles/{uuid}`
-
-Single-profile read and delete.
+Single profile.
 
 ### `POST /api/profiles`
 
-Create a profile by aggregating live Genderize / Agify / Nationalize (unchanged). Duplicate `name` returns the existing profile with 200.
+**Admin only.** Body: `{ "name": "..." }`. Duplicate `name` returns existing profile **200**.
 
-## Natural language parser — approach
+### `DELETE /api/profiles/{uuid}`
 
-Implementation: `classify/nl_query.py` (and country names: `classify/country_data.py`).
+**Admin only.** **204** on success.
+
+---
+
+## Natural language parser
+
+Implementation: `classify/nl_query.py` (countries: `classify/country_data.py`). Behaviour summarized below (unchanged in spirit from Stage 1).
 
 1. **Normalize** the query: trim, lowercase, strip accents, replace punctuation with spaces, collapse whitespace.
-2. **Countries**: For each of the 65 names in the seed’s country list, match the **longest** country name first (so “Niger” is not taken from “Nigeria”, “Guinea” after “Equatorial Guinea”, etc.). A match requires the full normalized country phrase to appear in the text with **word boundaries** (regex `(?<!\w)…(?!\w)` on normalized tokens).
-3. **Both genders**: Phrases like `male and female` / `men and women` (either order) remove a single-gender filter; remaining words still apply (e.g. `male and female teenagers above 17` → `age_group=teenager` + `min_age=17`, no `gender`).
-4. **One gender**: `male` / `males` / `man` / `men` → `gender=male`; `female` / `females` / `woman` / `women` → `gender=female` (written so `female` is not misparsed as `male`).
-5. **Age group words**: `child`/`children`, `teenager`/`teenagers`, `adult`/`adults`, `senior`/`seniors`, `elderly` map to the stored `age_group`. Conflicting two different groups in one query returns “unable to interpret.”
-6. **“young”** (not a stored `age_group`): sets inclusive ages **16–24**; intersects with any other `min_age` / `max_age` from the same query (e.g. `above` / `below`).
-7. **Numeric age**: `above N`, `over N`, `older than N`, `N+`, `at least N` → `min_age = N`. `below N`, `under N`, `younger than N`, `at most N` → `max_age = N-1` (inclusive end age so “below 30” matches ages ≤ 29).
-8. Filler words (`people`, `from`, `in`, …) are stripped for parsing but are not required for a valid query if other cues exist.
-
-The parsed result is a small dict of filter fields passed into the same `apply_filters` helper used by `GET /api/profiles` (and the query is sorted by `created_at` `desc` with stable tie-break on `id`).
+2. **Countries**: longest-match against the **65** seed country names with **word boundaries** (`(?<!\w)…(?!\w)` on normalized tokens).
+3. **Both genders**: phrases like `male and female` remove a single-gender filter; other cues still apply.
+4. **One gender**: `male`/`men`/… → `male`; `female`/… → `female`.
+5. **Age group words**: `child`/`teenager`/`adult`/`senior`/`elderly` → `age_group`; conflicts → unable to interpret.
+6. **“young”**: ages **16–24**; intersects with explicit `min_age` / `max_age` if present.
+7. **Numeric age**: `above N`, `below N`, etc. as documented previously in this section.
+8. Filler words (`people`, `from`, `in`, …) optional if other cues exist.
 
 ### Supported examples (illustrative)
 
 | Query (idea) | Parsed filters (conceptually) |
-|--------------|------------------------------|
+|--------------|--------------------------------|
 | young males from nigeria | `gender=male`, `min_age=16`, `max_age=24`, `country_id=NG` |
 | females above 30 | `gender=female`, `min_age=30` |
 | people from angola | `country_id=AO` |
 | adult males from kenya | `age_group=adult`, `gender=male`, `country_id=KE` |
 | male and female teenagers above 17 | `age_group=teenager`, `min_age=17` |
 
-## Limitations and edge cases (parser)
+### Limitations (parser)
 
-- **Country vocabulary** is the **65 countries present in the seed** (`country_data.py`). Any ISO country not in that set cannot be resolved by name.
-- **Short or ambiguous** country tokens (e.g. a lone “Congo” when multiple “Congo”-related names exist) may not map reliably; prefer full phrases such as “DR Congo” or “Republic of the Congo” as in the seed names.
-- **Spelling, slang, and languages** other than a loose English keyword set are not supported.
-- **“young”** is **always 16–24** for this layer; it does not set `age_group` and may intersect oddly with an explicit `age_group` in the same sentence (e.g. “young seniors” is rejected as an impossible age intersection).
-- **No negation** (“not from Kenya”), **no OR** between countries, and **no sorting** in natural language; search uses default sort only.
-- **Punctuation and typos** that break word boundaries or country phrases may cause “unable to interpret” even if a human would guess the intent.
+- Country vocabulary = **countries in the seed** only.
+- Short/ambiguous tokens may not map; spelling/slang/negation/OR unsupported; **“young”** is fixed 16–24; no NL-driven sort.
+
+---
 
 ## Errors
 
 | HTTP | When |
 |------|------|
-| 400 | Missing / empty required parameter (e.g. `q` on search) |
-| 422 | Invalid types or unknown query parameters; or NL query that cannot be interpreted |
-| 404 | Profile ID not found |
-| 502 | Upstream APIs failed on `POST` aggregate |
+| 400 | Missing API version header (`/api/*`); missing/empty parameter |
+| 401 | Missing/invalid/expired JWT |
+| 403 | **Forbidden** (e.g. non-admin mutation) |
+| 404 | Profile not found |
+| 422 | Invalid query params; NL not interpretable; invalid body types |
+| 429 | Rate limit exceeded |
+| 502 | Upstream failure on profile aggregation |
 
-Body shape: `{ "status": "error", "message": "<string>" }`.
+Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 
-## CORS
+---
 
-`django-cors-headers` is enabled with `CORS_ALLOW_ALL_ORIGINS = True`, so responses include `Access-Control-Allow-Origin: *` for browser-based checks.
+## Environment (see `.env.example`)
+
+| Variable | Role |
+|----------|------|
+| `DJANGO_SECRET_KEY` | Django signing; use strong secret in production |
+| `JWT_SIGNING_KEY` | Optional separate HS256 key for JWTs |
+| `DATABASE_URL` | Postgres URL (omit for SQLite) |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth |
+| `BACKEND_PUBLIC_URL` | Public API base (OAuth callback URL) |
+| `WEB_PORTAL_ORIGIN` | SPA origin (post-login redirect; CORS/CSRF) |
+| `CORS_EXTRA_ORIGINS` | Optional extra allowed origins (comma-separated) |
+| `INSIGHTA_CLI_OAUTH_REDIRECT` | Default CLI loopback redirect (CLI env) |
+| `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT lifetimes |
+
+---
 
 ## Deploy
 
@@ -140,4 +179,4 @@ Body shape: `{ "status": "error", "message": "<string>" }`.
 gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
 ```
 
-Set `DEBUG=False`, `DJANGO_SECRET_KEY`, and (for production) `ALLOWED_HOSTS` via the environment as appropriate.
+Use **`DEBUG=False`**, strong secrets, **`ALLOWED_HOSTS`**, **`WEB_PORTAL_ORIGIN`** / **`BACKEND_PUBLIC_URL`** as HTTPS origins, and a production **`DATABASE_URL`**. Ensure **`CSRF_TRUSTED_ORIGINS`** and **`CORS_ALLOWED_ORIGINS`** include the real portal URL.

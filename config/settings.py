@@ -83,8 +83,28 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# Grading / browser clients: allow any origin
-CORS_ALLOW_ALL_ORIGINS = True
+# Browser portal + credentials: explicit origins (http-only cookies + CSRF).
+WEB_PORTAL_ORIGIN = os.environ.get(
+    "WEB_PORTAL_ORIGIN", "http://localhost:5173"
+).strip()
+
+_cors_extra = os.environ.get("CORS_EXTRA_ORIGINS", "")
+_default_origins = [
+    WEB_PORTAL_ORIGIN.rstrip("/"),
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_origins_set: list[str] = []
+for o in _default_origins + [p.strip() for p in _cors_extra.split(",") if p.strip()]:
+    if o not in _origins_set:
+        _origins_set.append(o)
+
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = _origins_set
+CORS_ALLOW_CREDENTIALS = True
+
+# Required when the SPA on a different origin POSTs with cookies + CSRF header.
+CSRF_TRUSTED_ORIGINS = _origins_set.copy()
 
 REST_FRAMEWORK = {
     # Default AnonymousUser from django.contrib.auth (requires auth + contenttypes apps).
@@ -103,9 +123,6 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
 JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", "").strip()
 BACKEND_PUBLIC_URL = os.environ.get(
     "BACKEND_PUBLIC_URL", "http://localhost:8000"
-).strip()
-WEB_PORTAL_ORIGIN = os.environ.get(
-    "WEB_PORTAL_ORIGIN", "http://localhost:5173"
 ).strip()
 INSIGHTA_CLI_OAUTH_REDIRECT = os.environ.get(
     "INSIGHTA_CLI_OAUTH_REDIRECT", "http://127.0.0.1:8765/callback"

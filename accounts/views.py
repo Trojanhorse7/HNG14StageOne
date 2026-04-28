@@ -11,13 +11,15 @@ from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
 from django.utils import timezone
 from django.views import View
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.utils.decorators import method_decorator
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from accounts.authentication import JWTAuthentication
 
 from accounts.github_oauth import (
     build_authorize_url,
@@ -26,7 +28,7 @@ from accounts.github_oauth import (
     generate_pkce_pair,
     upsert_user_from_github_profile,
 )
-from accounts.models import GitHubOAuthState, RefreshToken
+from accounts.models import GitHubOAuthState, RefreshToken, User
 from accounts.tokens import hash_refresh_token, issue_token_pair
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,8 @@ def _portal_redirect(query: dict) -> str:
     return f"{base}/?{urlencode(query)}"
 
 
-def _set_auth_cookies(response: HttpResponseRedirect, access: str, refresh: str) -> None:
+def _set_auth_cookies(response, access: str, refresh: str) -> None:
+    """Attach http-only auth cookies to any HttpResponse subclass."""
     secure = not settings.DEBUG
     response.set_cookie(
         "insighta_access",
@@ -147,6 +150,103 @@ def _set_auth_cookies(response: HttpResponseRedirect, access: str, refresh: str)
         samesite="Lax",
         path="/",
     )
+
+
+def _perform_refresh_rotation(raw_refresh: str) -> tuple[str, str] | None:
+    """Return (access, refresh) or None if invalid."""
+    digest = hash_refresh_token(str(raw_refresh).strip())
+    now = timezone.now()
+    row = (
+        RefreshToken.objects.filter(
+            token_hash=digest,
+            revoked_at__isnull=True,
+            expires_at__gt=now,
+        )
+        .select_related("user")
+        .first()
+    )
+    if not row:
+        return None
+    user = row.user
+    if not user.is_active:
+        return None
+    row.revoked_at = now
+    row.save(update_fields=["revoked_at"])
+    access, refresh_raw = issue_token_pair(user)
+    return access, refresh_raw
+
+
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class CsrfCookieView(View):
+    """GET: ensure `csrftoken` cookie is set for browser clients (JS reads cookie for X-CSRFToken)."""
+
+    def get(self, request):
+        return JsonResponse({"status": "ok"})
+
+
+class MeView(APIView):
+    """Current user from JWT (cookie or Bearer)."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        u: User = request.user
+        return Response(
+            {
+                "status": "success",
+                "data": {
+                    "id": str(u.id),
+                    "username": u.username,
+                    "email": u.email,
+                    "role": u.role,
+                    "avatar_url": u.avatar_url,
+                    "github_id": u.github_id,
+                    "is_active": u.is_active,
+                },
+            }
+        )
+
+
+class WebRefreshView(View):
+    """
+    Browser-only refresh: read `insighta_refresh` http-only cookie, rotate, set new cookies.
+    CSRF required (not exempt).
+    """
+
+    def post(self, request):
+        raw = request.COOKIES.get("insighta_refresh")
+        if not raw:
+            return JsonResponse(
+                {"status": "error", "message": "Missing refresh cookie"},
+                status=401,
+            )
+        pair = _perform_refresh_rotation(raw)
+        if not pair:
+            return JsonResponse(
+                {"status": "error", "message": "Invalid or expired refresh token"},
+                status=401,
+            )
+        access, refresh_raw = pair
+        response = JsonResponse({"status": "success"})
+        _set_auth_cookies(response, access, refresh_raw)
+        return response
+
+
+class WebLogoutView(View):
+    """Revoke refresh from cookie and clear auth cookies. CSRF required."""
+
+    def post(self, request):
+        raw = request.COOKIES.get("insighta_refresh")
+        if raw:
+            digest = hash_refresh_token(str(raw).strip())
+            RefreshToken.objects.filter(
+                token_hash=digest, revoked_at__isnull=True
+            ).update(revoked_at=timezone.now())
+        response = JsonResponse({"status": "success"})
+        response.delete_cookie("insighta_access", path="/")
+        response.delete_cookie("insighta_refresh", path="/")
+        return response
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -215,33 +315,13 @@ class RefreshTokenView(APIView):
                 {"status": "error", "message": "Missing or empty parameter"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        digest = hash_refresh_token(str(raw).strip())
-        now = timezone.now()
-        row = (
-            RefreshToken.objects.filter(
-                token_hash=digest,
-                revoked_at__isnull=True,
-                expires_at__gt=now,
-            )
-            .select_related("user")
-            .first()
-        )
-        if not row:
+        pair = _perform_refresh_rotation(str(raw).strip())
+        if not pair:
             return Response(
                 {"status": "error", "message": "Invalid or expired refresh token"},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        user = row.user
-        if not user.is_active:
-            return Response(
-                {"status": "error", "message": "Account is inactive"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        row.revoked_at = now
-        row.save(update_fields=["revoked_at"])
-
-        access, refresh_raw = issue_token_pair(user)
+        access, refresh_raw = pair
         return Response(_success_token_payload(access, refresh_raw))
 
 

@@ -2,7 +2,10 @@
 
 Django + Django REST Framework: **`Profile`** model (UUID v7), PostgreSQL or SQLite, **GitHub OAuth + JWT** (Bearer or **http-only cookies**), **RBAC**, **CSRF** for browser writes, rule-based natural-language search (no LLMs), **CSV export**, and **rate limits**.
 
-Companion clients: **`insighta-frontend`** (Vite SPA) and **`insighta-cli`** (Typer); they use the same API and permissions.
+Companion clients (same API & permissions):
+
+- **Web portal:** [github.com/Trojanhorse7/insighta-frontend](https://github.com/Trojanhorse7/insighta-frontend)
+- **CLI:** [github.com/Trojanhorse7/insighta-cli](https://github.com/Trojanhorse7/insighta-cli)
 
 ## Setup
 

@@ -98,9 +98,9 @@ def parse_list_query_params(query_dict: Any) -> dict[str, Any]:
     if lim is not None:
         try:
             l = int(lim)
-            if l < 1 or l > 50:
+            if l < 1:
                 raise ValueError
-            out["limit"] = l
+            out["limit"] = min(l, 50)
         except (TypeError, ValueError) as e:
             raise ValueError(ERR_INVALID_QUERY) from e
     return out
@@ -127,9 +127,9 @@ def parse_search_query_params(query_dict: Any) -> dict[str, Any]:
     if lim is not None:
         try:
             l = int(lim)
-            if l < 1 or l > 50:
+            if l < 1:
                 raise ValueError
-            out["limit"] = l
+            out["limit"] = min(l, 50)
         except (TypeError, ValueError) as e:
             raise ValueError(ERR_INVALID_QUERY) from e
     return out

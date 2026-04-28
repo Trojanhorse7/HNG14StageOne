@@ -120,9 +120,9 @@ class ProfileListCreateView(APIView):
         return Response(
             {
                 "status": "success",
-                "page": page,
-                "limit": limit,
-                "total": total,
+                "page": int(page),
+                "limit": int(limit),
+                "total": int(total),
                 "data": [_full_profile_dict(p) for p in rows],
             },
             status=status.HTTP_200_OK,
@@ -225,9 +225,9 @@ class ProfileSearchView(APIView):
         return Response(
             {
                 "status": "success",
-                "page": page,
-                "limit": limit,
-                "total": total,
+                "page": int(page),
+                "limit": int(limit),
+                "total": int(total),
                 "data": [_full_profile_dict(p) for p in rows],
             },
             status=status.HTTP_200_OK,

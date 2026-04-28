@@ -31,6 +31,14 @@ class User(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
 
 class RefreshToken(models.Model):
     """Opaque refresh token stored as SHA-256 hash; raw value is shown once to the client."""

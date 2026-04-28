@@ -11,9 +11,13 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsActiveInsightaUser, IsInsightaAdmin
 from classify.models import Profile
 from classify.nl_query import parse_nl_query
+from classify.pagination_links import build_pagination_links, total_pages_count
 from classify.profile_filters import (
+    ALLOWED_LIST_PARAMS,
+    ALLOWED_SEARCH_PARAMS,
     ERR_BAD_REQUEST,
     ERR_INVALID_QUERY,
     apply_filters,
@@ -27,6 +31,9 @@ ERR_MISSING_NAME = "Missing or empty name"
 ERR_NAME_TYPE = "Invalid type"
 ERR_NOT_FOUND = "Profile not found"
 ERR_UNABLE_INTERPRET = "Unable to interpret query"
+
+LIST_PATH = "/api/profiles"
+SEARCH_PATH = "/api/profiles/search"
 
 
 def _utc_iso_z(dt: datetime) -> str:
@@ -84,8 +91,13 @@ def _parse_name_from_body(data) -> tuple[str | None, Response | None]:
 
 
 class ProfileListCreateView(APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [
+                IsActiveInsightaUser(),
+                IsInsightaAdmin(),
+            ]
+        return [IsActiveInsightaUser()]
 
     def get(self, request: Request) -> Response:
         try:
@@ -117,12 +129,22 @@ class ProfileListCreateView(APIView):
         qs = apply_sort(qs, sort_by, order)
         start = (page - 1) * limit
         rows = list(qs[start : start + limit])
+        links = build_pagination_links(
+            path=LIST_PATH,
+            query_params=request.query_params,
+            param_keys=ALLOWED_LIST_PARAMS,
+            page=page,
+            limit=limit,
+            total=total,
+        )
         return Response(
             {
                 "status": "success",
                 "page": int(page),
                 "limit": int(limit),
                 "total": int(total),
+                "total_pages": int(total_pages_count(total, limit)),
+                "links": links,
                 "data": [_full_profile_dict(p) for p in rows],
             },
             status=status.HTTP_200_OK,
@@ -187,9 +209,6 @@ class ProfileListCreateView(APIView):
 
 
 class ProfileSearchView(APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
-
     def get(self, request: Request) -> Response:
         try:
             parsed = parse_search_query_params(request.query_params)
@@ -222,12 +241,22 @@ class ProfileSearchView(APIView):
         qs = apply_sort(qs, sort_by, order)
         start = (page - 1) * limit
         rows = list(qs[start : start + limit])
+        links = build_pagination_links(
+            path=SEARCH_PATH,
+            query_params=request.query_params,
+            param_keys=ALLOWED_SEARCH_PARAMS,
+            page=page,
+            limit=limit,
+            total=total,
+        )
         return Response(
             {
                 "status": "success",
                 "page": int(page),
                 "limit": int(limit),
                 "total": int(total),
+                "total_pages": int(total_pages_count(total, limit)),
+                "links": links,
                 "data": [_full_profile_dict(p) for p in rows],
             },
             status=status.HTTP_200_OK,
@@ -235,8 +264,13 @@ class ProfileSearchView(APIView):
 
 
 class ProfileDetailView(APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            return [
+                IsActiveInsightaUser(),
+                IsInsightaAdmin(),
+            ]
+        return [IsActiveInsightaUser()]
 
     def get(self, request: Request, profile_id: str) -> Response:
         try:

@@ -22,9 +22,6 @@ def _utc_iso8601_z() -> str:
 class ClassifyNameView(APIView):
     """Classify a given name using the Genderize API."""
 
-    authentication_classes: list = []
-    permission_classes: list = []
-
     def get(self, request: Request) -> Response:
         name_values = request.GET.getlist("name")
 

@@ -16,6 +16,8 @@ DEBUG = os.environ.get("DEBUG", "true").lower() in ("1", "true", "yes")
 ALLOWED_HOSTS: list[str] = ["*"]
 
 INSTALLED_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
     "corsheaders",
     "rest_framework",
     "accounts",
@@ -26,8 +28,11 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "accounts.middleware.ApiVersionMiddleware",
+    "accounts.rate_limit_middleware.RateLimitMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "accounts.rate_limit_middleware.RequestLoggingMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -82,7 +87,14 @@ USE_TZ = True
 CORS_ALLOW_ALL_ORIGINS = True
 
 REST_FRAMEWORK = {
-    "UNAUTHENTICATED_USER": None,
+    # Default AnonymousUser from django.contrib.auth (requires auth + contenttypes apps).
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "accounts.authentication.JWTAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "accounts.permissions.IsActiveInsightaUser",
+    ],
+    "EXCEPTION_HANDLER": "accounts.exception_handlers.insighta_exception_handler",
 }
 
 # --- Insighta Labs+ auth (GitHub OAuth + JWT) ---
@@ -105,3 +117,26 @@ ACCESS_TOKEN_LIFETIME_SECONDS = int(
 REFRESH_TOKEN_LIFETIME_SECONDS = int(
     os.environ.get("REFRESH_TOKEN_LIFETIME_SECONDS", "300")
 )
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "loggers": {
+        "accounts.rate_limit_middleware": {
+            "handlers": ["console"],
+            "level": "INFO",
+        },
+    },
+}

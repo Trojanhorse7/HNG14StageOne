@@ -18,6 +18,7 @@ ALLOWED_HOSTS: list[str] = ["*"]
 INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
+    "accounts",
     "classify",
 ]
 
@@ -83,3 +84,24 @@ CORS_ALLOW_ALL_ORIGINS = True
 REST_FRAMEWORK = {
     "UNAUTHENTICATED_USER": None,
 }
+
+# --- Insighta Labs+ auth (GitHub OAuth + JWT) ---
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "").strip()
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", "").strip()
+BACKEND_PUBLIC_URL = os.environ.get(
+    "BACKEND_PUBLIC_URL", "http://localhost:8000"
+).strip()
+WEB_PORTAL_ORIGIN = os.environ.get(
+    "WEB_PORTAL_ORIGIN", "http://localhost:5173"
+).strip()
+INSIGHTA_CLI_OAUTH_REDIRECT = os.environ.get(
+    "INSIGHTA_CLI_OAUTH_REDIRECT", "http://127.0.0.1:8765/callback"
+).strip()
+
+ACCESS_TOKEN_LIFETIME_SECONDS = int(
+    os.environ.get("ACCESS_TOKEN_LIFETIME_SECONDS", "180")
+)
+REFRESH_TOKEN_LIFETIME_SECONDS = int(
+    os.environ.get("REFRESH_TOKEN_LIFETIME_SECONDS", "300")
+)

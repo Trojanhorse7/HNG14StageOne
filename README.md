@@ -10,7 +10,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Set `DATABASE_URL` (PostgreSQL) in `.env`, or leave it unset to use `db.sqlite3` in the project root.
+Set `DATABASE_URL` (PostgreSQL) in `.env`, or leave it unset to use `db.sqlite3` in the project root. See [`.env.example`](.env.example) for the variables this project reads.
 
 ```bash
 python manage.py migrate

@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -102,6 +103,7 @@ for o in _default_origins + [p.strip() for p in _cors_extra.split(",") if p.stri
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = _origins_set
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = (*default_headers, "x-api-version")
 
 # Required when the SPA on a different origin POSTs with cookies + CSRF header.
 CSRF_TRUSTED_ORIGINS = _origins_set.copy()

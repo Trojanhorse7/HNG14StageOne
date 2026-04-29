@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
+from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
@@ -130,15 +131,20 @@ def _portal_redirect(query: dict) -> str:
 
 
 def _set_auth_cookies(response, access: str, refresh: str) -> None:
-    """Attach http-only auth cookies to any HttpResponse subclass."""
-    secure = not settings.DEBUG
+    """Attach http-only auth cookies. Production uses None+Secure for cross-origin SPA fetch."""
+    if settings.DEBUG:
+        secure = False
+        samesite = "Lax"
+    else:
+        secure = True
+        samesite = "None"
     response.set_cookie(
         "insighta_access",
         access,
         max_age=settings.ACCESS_TOKEN_LIFETIME_SECONDS,
         httponly=True,
         secure=secure,
-        samesite="Lax",
+        samesite=samesite,
         path="/",
     )
     response.set_cookie(
@@ -147,9 +153,27 @@ def _set_auth_cookies(response, access: str, refresh: str) -> None:
         max_age=settings.REFRESH_TOKEN_LIFETIME_SECONDS,
         httponly=True,
         secure=secure,
-        samesite="Lax",
+        samesite=samesite,
         path="/",
     )
+
+
+def _delete_auth_cookies(response) -> None:
+    """Clear auth cookies with matching flags so browsers drop cross-site cookies."""
+    if settings.DEBUG:
+        response.delete_cookie("insighta_access", path="/")
+        response.delete_cookie("insighta_refresh", path="/")
+    else:
+        response.delete_cookie(
+            "insighta_access",
+            path="/",
+            samesite="None",
+        )
+        response.delete_cookie(
+            "insighta_refresh",
+            path="/",
+            samesite="None",
+        )
 
 
 def _perform_refresh_rotation(raw_refresh: str) -> tuple[str, str] | None:
@@ -178,10 +202,14 @@ def _perform_refresh_rotation(raw_refresh: str) -> tuple[str, str] | None:
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")
 class CsrfCookieView(View):
-    """GET: ensure `csrftoken` cookie is set for browser clients (JS reads cookie for X-CSRFToken)."""
+    """
+    GET: set `csrftoken` cookie and return the token for X-CSRFToken.
+    Cross-origin SPAs cannot read the cookie via document.cookie; they use `csrfToken` in JSON.
+    """
 
     def get(self, request):
-        return JsonResponse({"status": "ok"})
+        token = get_token(request)
+        return JsonResponse({"status": "ok", "csrfToken": token})
 
 
 class MeView(APIView):
@@ -244,8 +272,7 @@ class WebLogoutView(View):
                 token_hash=digest, revoked_at__isnull=True
             ).update(revoked_at=timezone.now())
         response = JsonResponse({"status": "success"})
-        response.delete_cookie("insighta_access", path="/")
-        response.delete_cookie("insighta_refresh", path="/")
+        _delete_auth_cookies(response)
         return response
 
 

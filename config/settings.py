@@ -106,6 +106,15 @@ CORS_ALLOW_CREDENTIALS = True
 # Required when the SPA on a different origin POSTs with cookies + CSRF header.
 CSRF_TRUSTED_ORIGINS = _origins_set.copy()
 
+# Cross-site SPA (e.g. Vercel → API on another host): csrftoken must be sent on
+# credentialed fetch. SameSite=None requires Secure=True (use HTTPS + DEBUG=False).
+if DEBUG:
+    CSRF_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = "Lax"
+else:
+    CSRF_COOKIE_SECURE = True
+    CSRF_COOKIE_SAMESITE = "None"
+
 REST_FRAMEWORK = {
     # Default AnonymousUser from django.contrib.auth (requires auth + contenttypes apps).
     "DEFAULT_AUTHENTICATION_CLASSES": [

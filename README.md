@@ -23,7 +23,8 @@ python manage.py seed_profiles   # optional; reads seed_profiles.json
 python manage.py runserver 0.0.0.0:8000
 ```
 
-One-off **admin** by GitHub login (`User.username`): `python manage.py set_user_role Trojanhorse7` (optional `--role analyst`).
+One-off **admin** by GitHub login (`User.username`):  
+`python manage.py set_user_role <github_username>` (optional `--role analyst`; default role is **admin**).
 
 `DATABASE_URL` selects Postgres; if unset, **`db.sqlite3`** in the project root is used.
 
@@ -75,12 +76,28 @@ Machine clients (CLI, curl with Bearer) are unaffected by CORS.
 
 ## Rate limiting & logging
 
-- **`/auth/*`:** **10** requests per minute per IP.
-- **`/api/*`:** **60** requests per minute per authenticated user (or per IP if anonymous).
+Limits are enforced in **two places** so `/api/*` can be keyed **after** JWT authentication:
 
-**429** response: `{ "status": "error", "message": "Too many requests" }`.
+| Scope | Mechanism | Key | Budget |
+|--------|-----------|-----|--------|
+| **`/api/*`** (DRF) | `DEFAULT_THROTTLE_CLASSES` → `accounts.throttles.ApiUserThrottle` | Authenticated: **`user.pk`**; otherwise client IP | **60/min** |
+| **`GET/POST /auth/me`**, **`POST /auth/refresh`**, **`POST /auth/logout`**, **`POST /auth/github/cli`** | `AuthBurstThrottle` on those views | Client IP | **10/min** |
+| **Other `/auth/*`** (e.g. **`/auth/csrf`**, **`/auth/github`**, **`/auth/github/callback`**, **`/auth/refresh/web`**, **`/auth/logout/web`**) | `RateLimitMiddleware` (`accounts.rate_limit_middleware`) | Client IP | **10/min** |
 
-Request timing and user id are logged at **INFO** (`accounts.rate_limit_middleware`).
+Implementation notes:
+
+- Middleware **does not** throttle `/api/*` (JWT is applied inside DRF, not before middleware runs).
+- DRF burst auth endpoints are **skipped** in middleware so they are not **double-counted**.
+- Throttle scope names: `api_user`, `auth_burst` (see `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` in `config/settings.py`).
+
+**429** responses:
+
+- From **middleware**: `{ "status": "error", "message": "Too many requests" }`.
+- From **DRF throttles**: same envelope via `accounts.exception_handlers.insighta_exception_handler` (message describes the throttle).
+
+The in-process limiter is suitable for development/single-instance deploys; use a shared store (e.g. Redis) for multi-worker production if you need hard global caps.
+
+**Request logging:** method, path, status, duration, and user id (when resolved) at **INFO** on `accounts.rate_limit_middleware` (`RequestLoggingMiddleware`).
 
 ---
 
@@ -178,7 +195,24 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | `WEB_PORTAL_ORIGIN` | SPA origin (post-login redirect; CORS/CSRF) |
 | `CORS_EXTRA_ORIGINS` | Optional extra allowed origins (comma-separated) |
 | `INSIGHTA_CLI_OAUTH_REDIRECT` | CLI: browser redirect target after API callback (must match CLI listener; default `http://127.0.0.1:8765/callback`) |
-| `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT lifetimes |
+| `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT access / opaque refresh lifetimes |
+| `DEBUG` | **`false`** in production: auth/CSRF cookies use **Secure** + **SameSite=None** for cross-site SPAs. **`true`** (local dev) uses **Lax** and non-secure CSRF defaults. See `config/settings.py`. |
+
+---
+
+## Key source files (orientation)
+
+| Area | Location |
+|------|-----------|
+| JWT + OAuth views, cookies | `accounts/views.py` |
+| JWT authentication | `accounts/authentication.py` |
+| RBAC permissions | `accounts/permissions.py` |
+| API rate throttles (DRF) | `accounts/throttles.py` |
+| Rate limit middleware + request logging | `accounts/rate_limit_middleware.py` |
+| DRF error envelope | `accounts/exception_handlers.py` |
+| Admin role CLI | `accounts/management/commands/set_user_role.py` |
+| Profiles + NL search + export | `classify/profile_views.py`, `classify/nl_query.py` |
+| Settings (CORS, CSRF, REST_FRAMEWORK, lifetimes) | `config/settings.py` |
 
 ---
 

@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.authentication import JWTAuthentication
+from accounts.throttles import AuthBurstThrottle
 
 from accounts.github_oauth import (
     build_authorize_url,
@@ -258,6 +259,7 @@ class MeView(APIView):
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
+    throttle_classes = [AuthBurstThrottle]
 
     def get(self, request: Request) -> Response:
         u: User = request.user
@@ -329,6 +331,7 @@ class GitHubCliExchangeView(APIView):
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
+    throttle_classes = [AuthBurstThrottle]
 
     def post(self, request: Request) -> Response:
         if not settings.GITHUB_CLIENT_ID:
@@ -385,6 +388,7 @@ class RefreshTokenView(APIView):
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
+    throttle_classes = [AuthBurstThrottle]
 
     def post(self, request: Request) -> Response:
         raw = request.data.get("refresh_token")
@@ -409,6 +413,7 @@ class LogoutView(APIView):
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
+    throttle_classes = [AuthBurstThrottle]
 
     def post(self, request: Request) -> Response:
         raw = request.data.get("refresh_token")

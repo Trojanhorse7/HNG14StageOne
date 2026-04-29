@@ -13,21 +13,38 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# In-memory rate limit store (use Redis in production)
+# In-memory rate limit store 
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 
 
-def _get_rate_limit_key(request: HttpRequest, path: str) -> tuple[str, int, int]:
-    """Return (key, limit, window_seconds) based on path and user."""
-    if path.startswith("/auth/"):
+def _is_drf_auth_burst_path(p: str) -> bool:
+    """Paths handled by DRF + AuthBurstThrottle (skip duplicate middleware limit)."""
+    if p == "/auth/me" or p.startswith("/auth/me/"):
+        return True
+    if p == "/auth/github/cli" or p.startswith("/auth/github/cli/"):
+        return True
+    if p.startswith("/auth/refresh/web"):
+        return False
+    if p == "/auth/refresh" or p.startswith("/auth/refresh/"):
+        return True
+    if p.startswith("/auth/logout/web"):
+        return False
+    if p == "/auth/logout" or p.startswith("/auth/logout/"):
+        return True
+    return False
+
+
+def _get_rate_limit_key(request: HttpRequest, p: str) -> tuple[str, int, int]:
+    """Return (key, limit, window_seconds). Empty key skips limiting."""
+    # /api/* is throttled in DRF after JWT auth (per-user).
+    if p == "/api" or p.startswith("/api/"):
+        return "", 0, 0
+    # Same burst policy as middleware for remaining /auth/* (OAuth redirect, web cookie routes).
+    if _is_drf_auth_burst_path(p):
+        return "", 0, 0
+    if p.startswith("/auth"):
         ip = request.META.get("REMOTE_ADDR", "unknown")
         return f"auth:{ip}", 10, 60
-    elif path.startswith("/api/"):
-        user = getattr(request, "user", None)
-        if user and getattr(user, "is_authenticated", False):
-            user_id = getattr(user, "pk", "anonymous")
-            return f"api:{user_id}", 60, 60
-        return f"api:anon:{request.META.get('REMOTE_ADDR', 'unknown')}", 60, 60
     return "", 0, 0
 
 
@@ -47,8 +64,8 @@ class RateLimitMiddleware:
         self.get_response = get_response
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
-        path = request.path.rstrip("/")
-        key, limit, window = _get_rate_limit_key(request, path)
+        p = request.path.rstrip("/") or "/"
+        key, limit, window = _get_rate_limit_key(request, p)
         if key and not _check_rate_limit(key, limit, window):
             return JsonResponse(
                 {"status": "error", "message": "Too many requests"},

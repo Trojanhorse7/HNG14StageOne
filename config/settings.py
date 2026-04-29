@@ -125,6 +125,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "accounts.permissions.IsActiveInsightaUser",
     ],
+    "DEFAULT_THROTTLE_CLASSES": ["accounts.throttles.ApiUserThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "api_user": "60/minute",
+        "auth_burst": "10/minute",
+    },
     "EXCEPTION_HANDLER": "accounts.exception_handlers.insighta_exception_handler",
 }
 

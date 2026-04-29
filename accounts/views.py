@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
@@ -52,6 +52,26 @@ def _web_callback_url() -> str:
     return f"{base}/auth/github/callback"
 
 
+def _cli_oauth_forward_query(query) -> str:
+    """
+    Redirect browser to the CLI loopback with OAuth query params.
+    GitHub OAuth Apps allow only one callback URL — the web uses this API route;
+    unknown server state is treated as CLI and forwarded here.
+    """
+    base = (settings.INSIGHTA_CLI_OAUTH_REDIRECT or "").strip()
+    if not base:
+        base = "http://127.0.0.1:8765/callback"
+    parsed = urlparse(base)
+    path = parsed.path if parsed.path else "/"
+    items: list[tuple[str, str]] = []
+    for key in ("code", "state", "error", "error_description", "error_uri"):
+        val = query.get(key)
+        if val:
+            items.append((key, val))
+    qstr = urlencode(items)
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", qstr, ""))
+
+
 def _purge_expired_oauth_states() -> None:
     GitHubOAuthState.objects.filter(expires_at__lt=timezone.now()).delete()
 
@@ -80,12 +100,14 @@ class GitHubLoginRedirectView(View):
 
 
 class GitHubCallbackView(View):
-    """GitHub redirects here with ?code=&state=; exchange code, set cookies, redirect to portal."""
+    """GitHub redirects here once; browser flow uses server PKCE state, CLI is forwarded to loopback."""
 
     def get(self, request):
         code = request.GET.get("code")
         state = request.GET.get("state")
-        if not code or not state:
+        gh_error = request.GET.get("error")
+
+        if not state:
             return HttpResponseRedirect(
                 _portal_redirect({"error": "missing_code_or_state"})
             )
@@ -93,36 +115,50 @@ class GitHubCallbackView(View):
         row = GitHubOAuthState.objects.filter(
             state=state, expires_at__gte=timezone.now()
         ).first()
-        if not row:
+
+        if row:
+            if gh_error:
+                row.delete()
+                return HttpResponseRedirect(
+                    _portal_redirect({"error": (gh_error or "oauth_denied")[:80]})
+                )
+            if not code:
+                return HttpResponseRedirect(
+                    _portal_redirect({"error": "missing_code_or_state"})
+                )
+
+            verifier = row.code_verifier
+            row.delete()
+
+            try:
+                token_json = exchange_code_for_token(
+                    code=code,
+                    code_verifier=verifier,
+                    redirect_uri=_web_callback_url(),
+                )
+                gh_access = token_json["access_token"]
+                profile = fetch_github_user(gh_access)
+                user = upsert_user_from_github_profile(profile)
+            except Exception as e:
+                logger.exception("GitHub OAuth callback failed")
+                return HttpResponseRedirect(
+                    _portal_redirect({"error": "oauth_failed", "detail": str(e)[:120]})
+                )
+
+            if not user.is_active:
+                return HttpResponseRedirect(_portal_redirect({"error": "account_inactive"}))
+
+            access, refresh_raw = issue_token_pair(user)
+            response = HttpResponseRedirect(
+                _portal_redirect({"login": "success"}, path="app/dashboard")
+            )
+            _set_auth_cookies(response, access, refresh_raw)
+            return response
+
+        # No server OAuth row → CLI flow (single registered GitHub callback is this URL).
+        if not gh_error and not code:
             return HttpResponseRedirect(_portal_redirect({"error": "invalid_state"}))
-
-        verifier = row.code_verifier
-        row.delete()
-
-        try:
-            token_json = exchange_code_for_token(
-                code=code,
-                code_verifier=verifier,
-                redirect_uri=_web_callback_url(),
-            )
-            gh_access = token_json["access_token"]
-            profile = fetch_github_user(gh_access)
-            user = upsert_user_from_github_profile(profile)
-        except Exception as e:
-            logger.exception("GitHub OAuth callback failed")
-            return HttpResponseRedirect(
-                _portal_redirect({"error": "oauth_failed", "detail": str(e)[:120]})
-            )
-
-        if not user.is_active:
-            return HttpResponseRedirect(_portal_redirect({"error": "account_inactive"}))
-
-        access, refresh_raw = issue_token_pair(user)
-        response = HttpResponseRedirect(
-            _portal_redirect({"login": "success"}, path="app/dashboard")
-        )
-        _set_auth_cookies(response, access, refresh_raw)
-        return response
+        return HttpResponseRedirect(_cli_oauth_forward_query(request.GET))
 
 
 def _portal_redirect(query: dict, path: str = "") -> str:
@@ -284,10 +320,11 @@ class WebLogoutView(View):
 @method_decorator(csrf_exempt, name="dispatch")
 class GitHubCliExchangeView(APIView):
     """
-    CLI completes OAuth: localhost captures ?code=&state=, then POSTs here with
-    the same code_verifier that was used in the authorize URL (CLI-generated flow).
+    CLI completes OAuth: after GitHub hits /auth/github/callback, the API redirects to
+    loopback with ?code=&state=; CLI POSTs here with code_verifier.
 
-    Request JSON: code, code_verifier, redirect_uri (must match GitHub App callback).
+    Request JSON: code, code_verifier, redirect_uri (must be {API}/auth/github/callback —
+    the single URL registered on the GitHub OAuth App).
     """
 
     authentication_classes: list = []
@@ -305,6 +342,15 @@ class GitHubCliExchangeView(APIView):
         if not code or not code_verifier or not redirect_uri:
             return Response(
                 {"status": "error", "message": "Missing or empty parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        expected = _web_callback_url()
+        if str(redirect_uri).strip().rstrip("/") != expected.rstrip("/"):
+            return Response(
+                {
+                    "status": "error",
+                    "message": "redirect_uri must match the API GitHub callback URL",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:

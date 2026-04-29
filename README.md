@@ -48,7 +48,11 @@ One-off **admin** by GitHub login (`User.username`): `python manage.py set_user_
 1. **`GET /auth/github`** — starts PKCE flow; GitHub redirects to **`{BACKEND_PUBLIC_URL}/auth/github/callback`**.
 2. Callback sets **`insighta_access`** / **`insighta_refresh`** (http-only) and redirects to **`WEB_PORTAL_ORIGIN`**.
 
-**CLI OAuth:** **`POST /auth/github/cli`** with `code`, `code_verifier`, `redirect_uri` (see CLI README).
+**CLI OAuth** (GitHub **OAuth Apps** allow a **single** callback URL — use the API’s):
+
+1. Register **`{BACKEND_PUBLIC_URL}/auth/github/callback`** on the GitHub OAuth App (same as the browser flow).
+2. CLI opens GitHub with `redirect_uri` = that URL. GitHub hits the API callback; if the `state` is not a server-started browser session, the API **302**s to **`INSIGHTA_CLI_OAUTH_REDIRECT`** (default `http://127.0.0.1:8765/callback`) with `code` / `error` query params for the local CLI listener.
+3. **`POST /auth/github/cli`** with `code`, `code_verifier`, and `redirect_uri` = **`{BACKEND_PUBLIC_URL}/auth/github/callback`** (must match step 1).
 
 **RBAC:**
 
@@ -173,7 +177,7 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | `BACKEND_PUBLIC_URL` | Public API base (OAuth callback URL) |
 | `WEB_PORTAL_ORIGIN` | SPA origin (post-login redirect; CORS/CSRF) |
 | `CORS_EXTRA_ORIGINS` | Optional extra allowed origins (comma-separated) |
-| `INSIGHTA_CLI_OAUTH_REDIRECT` | Default CLI loopback redirect (CLI env) |
+| `INSIGHTA_CLI_OAUTH_REDIRECT` | CLI: browser redirect target after API callback (must match CLI listener; default `http://127.0.0.1:8765/callback`) |
 | `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT lifetimes |
 
 ---

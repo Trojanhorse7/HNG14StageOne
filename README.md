@@ -7,6 +7,32 @@ Companion clients (same API & permissions):
 - **Web portal:** [github.com/Trojanhorse7/insighta-frontend](https://github.com/Trojanhorse7/insighta-frontend)
 - **CLI:** [github.com/Trojanhorse7/insighta-cli](https://github.com/Trojanhorse7/insighta-cli)
 
+---
+
+## Architecture
+
+### System Architecture
+
+![System Architecture](docs/ARCHITECTURE.png)
+
+### Browser Authentication Flow
+
+![Browser Authentication Flow](docs/Browser%20Authentication%20Flow.png)
+
+### CLI Authentication Flow
+
+![CLI Authentication Flow](docs/CLI%20Authentication%20Flow.png)
+
+### Profile CRUD & Data Flow
+
+![Profile CRUD & Data Flow](docs/Profile%20CRUD%20%26%20Data%20Flow.png)
+
+### Request Lifecycle
+
+![Request Lifecycle](docs/Request%20Lifecycle%20.png)
+
+---
+
 ## Setup
 
 ```bash

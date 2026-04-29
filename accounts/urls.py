@@ -19,6 +19,8 @@ urlpatterns = [
     path("auth/csrf/", CsrfCookieView.as_view()),
     path("auth/me", MeView.as_view()),
     path("auth/me/", MeView.as_view()),
+    path("api/users/me", MeView.as_view()),
+    path("api/users/me/", MeView.as_view()),
     path("auth/refresh/web", WebRefreshView.as_view()),
     path("auth/refresh/web/", WebRefreshView.as_view()),
     path("auth/logout/web", WebLogoutView.as_view()),

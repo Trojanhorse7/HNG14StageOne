@@ -39,9 +39,8 @@ def _get_rate_limit_key(request: HttpRequest, p: str) -> tuple[str, int, int]:
     # /api/* is throttled in DRF after JWT auth (per-user).
     if p == "/api" or p.startswith("/api/"):
         return "", 0, 0
-    # Browser OAuth redirects: graders hit /auth/github often; avoid 429 from tight IP bucket.
+    # Browser OAuth callback: many redirects in one flow — do not tighten here.
     if p in (
-        "/auth/github",
         "/auth/github/callback",
     ):
         return "", 0, 0

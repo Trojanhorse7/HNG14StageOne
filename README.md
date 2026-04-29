@@ -68,7 +68,7 @@ One-off **admin** by GitHub login (`User.username`):
 | **Refresh (browser)** | **`POST /auth/refresh/web`** — reads **`insighta_refresh`** http-only cookie; **CSRF required** (`X-CSRFToken` + `csrftoken` cookie). Rotates and sets new cookies. |
 | **Logout (browser)** | **`POST /auth/logout/web`** — CSRF required; revokes refresh and clears cookies. |
 | **CSRF bootstrap** | **`GET /auth/csrf`** — ensures **`csrftoken`** is set for SPA clients. |
-| **Current user** | **`GET /auth/me`** — JWT required; returns `id`, `username`, `email`, `role`, `avatar_url`, `github_id`, `is_active`. |
+| **Current user** | **`GET /auth/me`** or **`GET /api/users/me`** (same response; **`/api/*`** requires **`X-API-Version: 1`**) — JWT required; returns `id`, `username`, `email`, `role`, `avatar_url`, `github_id`, `is_active`. |
 
 **GitHub OAuth (browser):**
 
@@ -111,11 +111,13 @@ Limits are enforced in **two places** so `/api/*` can be keyed **after** JWT aut
 |--------|-----------|-----|--------|
 | **`/api/*`** (DRF) | `DEFAULT_THROTTLE_CLASSES` → `accounts.throttles.ApiUserThrottle` | Authenticated: **`user.pk`**; otherwise client IP | **60/min** |
 | **`GET/POST /auth/me`**, **`POST /auth/refresh`**, **`POST /auth/logout`**, **`POST /auth/github/cli`** | `AuthBurstThrottle` on those views | Client IP | **10/min** |
-| **Other `/auth/*`** (e.g. **`/auth/csrf`**, **`/auth/github`**, **`/auth/github/callback`**, **`/auth/refresh/web`**, **`/auth/logout/web`**) | `RateLimitMiddleware` (`accounts.rate_limit_middleware`) | Client IP | **10/min** |
+| **Other `/auth/*`** (e.g. **`/auth/csrf`**, **`/auth/github`**, **`/auth/refresh/web`**, **`/auth/logout/web`**) | `RateLimitMiddleware` (`accounts.rate_limit_middleware`) | Client IP | **10/min** |
+| **`/auth/github/callback`** | (no middleware IP bucket) | — | OAuth redirect bursts |
 
 Implementation notes:
 
 - Middleware **does not** throttle `/api/*` (JWT is applied inside DRF, not before middleware runs).
+- **`GET /auth/github/callback`** is **skipped** by the middleware IP limiter (other **`/auth/github`** traffic is still **10/min** per IP).
 - DRF burst auth endpoints are **skipped** in middleware so they are not **double-counted**.
 - Throttle scope names: `api_user`, `auth_burst` (see `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` in `config/settings.py`).
 

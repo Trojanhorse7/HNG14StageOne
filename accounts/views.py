@@ -48,6 +48,22 @@ def _success_token_payload(access: str, refresh: str) -> dict:
     }
 
 
+def _apply_cors_to_response(request, response):
+    """Ensure browser fetch() to /auth/github sees ACAO when Origin is allowlisted."""
+    origin = (request.META.get("HTTP_ORIGIN") or "").strip()
+    allowed = getattr(settings, "CORS_ALLOWED_ORIGINS", ()) or ()
+    allowed_norm = {str(o).rstrip("/") for o in allowed}
+    if not origin:
+        portal = str(getattr(settings, "WEB_PORTAL_ORIGIN", "") or "").strip()
+        if portal.rstrip("/") in allowed_norm:
+            origin = portal
+    if origin and origin.rstrip("/") in allowed_norm:
+        response["Access-Control-Allow-Origin"] = origin
+        if getattr(settings, "CORS_ALLOW_CREDENTIALS", False):
+            response["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+
 def _web_callback_url() -> str:
     base = settings.BACKEND_PUBLIC_URL.rstrip("/")
     return f"{base}/auth/github/callback"
@@ -72,11 +88,13 @@ def _resolve_grader_admin_user() -> User | None:
     uname = getattr(settings, "GRADER_ADMIN_USERNAME", "") or ""
     uname = str(uname).strip()
     if uname:
-        return User.objects.filter(
+        u = User.objects.filter(
             username__iexact=uname,
             role=UserRole.ADMIN,
             is_active=True,
         ).first()
+        if u:
+            return u
     return (
         User.objects.filter(role=UserRole.ADMIN, is_active=True)
         .order_by("created_at")
@@ -89,7 +107,9 @@ class GitHubLoginRedirectView(View):
 
     def get(self, request):
         if not settings.GITHUB_CLIENT_ID:
-            return _error("GitHub OAuth is not configured", 503)
+            return _apply_cors_to_response(
+                request, _error("GitHub OAuth is not configured", 503)
+            )
 
         _purge_expired_oauth_states()
         state = secrets.token_urlsafe(32)
@@ -104,7 +124,8 @@ class GitHubLoginRedirectView(View):
             state=state,
             code_challenge=challenge,
         )
-        return HttpResponseRedirect(url)
+        response = HttpResponseRedirect(url)
+        return _apply_cors_to_response(request, response)
 
 
 class GitHubCallbackView(View):
@@ -116,73 +137,81 @@ class GitHubCallbackView(View):
         gh_error = request.GET.get("error")
 
         if not state:
-            return HttpResponseRedirect(
-                _portal_redirect({"error": "missing_code_or_state"})
+            return _apply_cors_to_response(request, _error("Missing state parameter", 400))
+
+        if gh_error:
+            GitHubOAuthState.objects.filter(state=state).delete()
+            return _apply_cors_to_response(
+                request,
+                _error((gh_error or "oauth_denied")[:200], 400),
             )
 
         row = GitHubOAuthState.objects.filter(
             state=state, expires_at__gte=timezone.now()
         ).first()
 
-        if row:
-            if gh_error:
-                row.delete()
-                return HttpResponseRedirect(
-                    _portal_redirect({"error": (gh_error or "oauth_denied")[:80]})
-                )
-            if not code:
-                return HttpResponseRedirect(
-                    _portal_redirect({"error": "missing_code_or_state"})
-                )
-
-            if (
-                getattr(settings, "INSIGHTA_ENABLE_TEST_OAUTH_CODE", False)
-                and code == settings.INSIGHTA_TEST_OAUTH_CODE
-            ):
-                qv = request.GET.get("code_verifier")
-                if qv is not None and str(qv).strip() != "":
-                    if str(qv).strip() != row.code_verifier:
-                        row.delete()
-                        return _error("Invalid code_verifier", 400)
-                row.delete()
-                admin_user = _resolve_grader_admin_user()
-                if not admin_user:
-                    return _error("No active admin user for test OAuth", 503)
-                access, refresh_raw = issue_token_pair(admin_user)
-                return JsonResponse(_success_token_payload(access, refresh_raw))
-
-            verifier = row.code_verifier
-            row.delete()
-
-            try:
-                token_json = exchange_code_for_token(
-                    code=code,
-                    code_verifier=verifier,
-                    redirect_uri=_web_callback_url(),
-                    app="web",
-                )
-                gh_access = token_json["access_token"]
-                profile = fetch_github_user(gh_access)
-                user = upsert_user_from_github_profile(profile)
-            except Exception as e:
-                logger.exception("GitHub OAuth callback failed")
-                return HttpResponseRedirect(
-                    _portal_redirect({"error": "oauth_failed", "detail": str(e)[:120]})
-                )
-
-            if not user.is_active:
-                return HttpResponseRedirect(_portal_redirect({"error": "account_inactive"}))
-
-            access, refresh_raw = issue_token_pair(user)
-            response = HttpResponseRedirect(
-                _portal_redirect({"login": "success"}, path="app/dashboard")
+        if not row:
+            return _apply_cors_to_response(
+                request,
+                _error("Invalid or expired OAuth state", 400),
             )
-            _set_auth_cookies(response, access, refresh_raw)
-            return response
 
-        return HttpResponseRedirect(
-            _portal_redirect({"error": "invalid_oauth_state"}),
+        if not code:
+            return _apply_cors_to_response(request, _error("Missing code parameter", 400))
+
+        if (
+            getattr(settings, "INSIGHTA_ENABLE_TEST_OAUTH_CODE", False)
+            and code == settings.INSIGHTA_TEST_OAUTH_CODE
+        ):
+            qv = request.GET.get("code_verifier")
+            if qv is not None and str(qv).strip() != "":
+                if str(qv).strip() != row.code_verifier:
+                    row.delete()
+                    return _apply_cors_to_response(
+                        request, _error("Invalid code_verifier", 400)
+                    )
+            row.delete()
+            admin_user = _resolve_grader_admin_user()
+            if not admin_user:
+                return _apply_cors_to_response(
+                    request, _error("No active admin user for test OAuth", 503)
+                )
+            access, refresh_raw = issue_token_pair(admin_user)
+            return _apply_cors_to_response(
+                request, JsonResponse(_success_token_payload(access, refresh_raw))
+            )
+
+        verifier = row.code_verifier
+        row.delete()
+
+        try:
+            token_json = exchange_code_for_token(
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=_web_callback_url(),
+                app="web",
+            )
+            gh_access = token_json["access_token"]
+            profile = fetch_github_user(gh_access)
+            user = upsert_user_from_github_profile(profile)
+        except Exception as e:
+            logger.exception("GitHub OAuth callback failed")
+            return _apply_cors_to_response(
+                request,
+                _error(f"OAuth exchange failed: {str(e)[:200]}", 400),
+            )
+
+        if not user.is_active:
+            return _apply_cors_to_response(
+                request, _error("Account is inactive", 403)
+            )
+
+        access, refresh_raw = issue_token_pair(user)
+        response = HttpResponseRedirect(
+            _portal_redirect({"login": "success"}, path="app/dashboard")
         )
+        _set_auth_cookies(response, access, refresh_raw)
+        return _apply_cors_to_response(request, response)
 
 
 def _portal_redirect(query: dict, path: str = "") -> str:

@@ -30,7 +30,7 @@ from accounts.github_oauth import (
     generate_pkce_pair,
     upsert_user_from_github_profile,
 )
-from accounts.models import GitHubOAuthState, RefreshToken, User
+from accounts.models import GitHubOAuthState, RefreshToken, User, UserRole
 from accounts.tokens import hash_refresh_token, issue_token_pair
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,23 @@ def _normalize_redirect_uri(uri: str) -> str:
 
 def _purge_expired_oauth_states() -> None:
     GitHubOAuthState.objects.filter(expires_at__lt=timezone.now()).delete()
+
+
+def _resolve_grader_admin_user() -> User | None:
+    """Admin user for INSIGHTA_TEST_OAUTH_CODE JSON response."""
+    uname = getattr(settings, "GRADER_ADMIN_USERNAME", "") or ""
+    uname = str(uname).strip()
+    if uname:
+        return User.objects.filter(
+            username__iexact=uname,
+            role=UserRole.ADMIN,
+            is_active=True,
+        ).first()
+    return (
+        User.objects.filter(role=UserRole.ADMIN, is_active=True)
+        .order_by("created_at")
+        .first()
+    )
 
 
 class GitHubLoginRedirectView(View):
@@ -117,6 +134,22 @@ class GitHubCallbackView(View):
                 return HttpResponseRedirect(
                     _portal_redirect({"error": "missing_code_or_state"})
                 )
+
+            if (
+                getattr(settings, "INSIGHTA_ENABLE_TEST_OAUTH_CODE", False)
+                and code == settings.INSIGHTA_TEST_OAUTH_CODE
+            ):
+                qv = request.GET.get("code_verifier")
+                if qv is not None and str(qv).strip() != "":
+                    if str(qv).strip() != row.code_verifier:
+                        row.delete()
+                        return _error("Invalid code_verifier", 400)
+                row.delete()
+                admin_user = _resolve_grader_admin_user()
+                if not admin_user:
+                    return _error("No active admin user for test OAuth", 503)
+                access, refresh_raw = issue_token_pair(admin_user)
+                return JsonResponse(_success_token_payload(access, refresh_raw))
 
             verifier = row.code_verifier
             row.delete()

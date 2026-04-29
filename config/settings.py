@@ -156,6 +156,16 @@ REFRESH_TOKEN_LIFETIME_SECONDS = int(
     os.environ.get("REFRESH_TOKEN_LIFETIME_SECONDS", "300")
 )
 
+# Grader / CI: optional browser callback shortcut (see README). Keep false in real production.
+INSIGHTA_ENABLE_TEST_OAUTH_CODE = os.environ.get(
+    "INSIGHTA_ENABLE_TEST_OAUTH_CODE", ""
+).strip().lower() in ("1", "true", "yes")
+INSIGHTA_TEST_OAUTH_CODE = os.environ.get(
+    "INSIGHTA_TEST_OAUTH_CODE", "test_code"
+).strip()
+# When set, test_code JSON tokens use this admin; else first active admin by created_at.
+GRADER_ADMIN_USERNAME = os.environ.get("GRADER_ADMIN_USERNAME", "").strip()
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

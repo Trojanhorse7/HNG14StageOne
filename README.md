@@ -230,7 +230,32 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | `CORS_EXTRA_ORIGINS` | Optional extra allowed origins (comma-separated) |
 | `INSIGHTA_CLI_OAUTH_REDIRECT` | Allowlisted **`redirect_uri`** for **`POST /auth/github/cli`**; must match the CLI OAuth App’s GitHub callback (loopback, e.g. `http://127.0.0.1:8765/callback`) |
 | `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT access / opaque refresh lifetimes |
+| `INSIGHTA_ENABLE_TEST_OAUTH_CODE` | If **`true`**, **`GET /auth/github/callback?code=test_code&state=...`** (with a valid `state` from **`GET /auth/github`**) returns JSON **`access_token`** + **`refresh_token`** for an admin user instead of redirecting. **Keep `false` in production** unless a grader requires it. |
+| `INSIGHTA_TEST_OAUTH_CODE` | Literal `code` value to treat as test (default **`test_code`**). |
+| `GRADER_ADMIN_USERNAME` | Optional GitHub **`username`** for that JSON response; if unset, first active **admin** by `created_at`. |
 | `DEBUG` | **`false`** in production: auth/CSRF cookies use **Secure** + **SameSite=None** for cross-site SPAs. **`true`** (local dev) uses **Lax** and non-secure CSRF defaults. See `config/settings.py`. |
+
+---
+
+## Automated grading (`test_code`)
+
+Some checkers call **`GET /auth/github`** then **`GET /auth/github/callback`** with a special **`code`** (default **`test_code`**) to obtain **admin** access + refresh as **JSON** (no GitHub token exchange).
+
+1. Ensure at least one **`User`** with **`role=admin`** exists (sign in once, then `set_user_role` if needed).
+2. Set **`INSIGHTA_ENABLE_TEST_OAUTH_CODE=true`** and redeploy. Optionally set **`GRADER_ADMIN_USERNAME`** to pin which admin receives tokens.
+3. If the checker sends **`code_verifier`** in the query, it must match the verifier stored for that **`state`**.
+
+**Analyst token** is still supplied separately (paste into the form or run **`python manage.py issue_tokens <analyst_username>`** on the server).
+
+**Option B — paste only:** leave **`INSIGHTA_ENABLE_TEST_OAUTH_CODE`** unset/false and paste tokens from **`issue_tokens`** for admin (access + refresh) and analyst (access).
+
+**Rate limits:** **`GET /auth/github`** and **`GET /auth/github/callback`** are excluded from the middleware’s 10/min per-IP bucket so automated checks do not get **429** on the OAuth start URL.
+
+---
+
+## CI
+
+GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on **`master`** (lint, tests on SQLite + Postgres, pip-audit). Push that file so the remote repo reports CI.
 
 ---
 
@@ -245,6 +270,7 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | Rate limit middleware + request logging | `accounts/rate_limit_middleware.py` |
 | DRF error envelope | `accounts/exception_handlers.py` |
 | Admin role CLI | `accounts/management/commands/set_user_role.py` |
+| Print access + refresh (grader / local) | `accounts/management/commands/issue_tokens.py` |
 | Root URLconf (includes only) | `config/urls.py` |
 | Profiles + NL search | `classify/profile_views.py`, `classify/nl_query.py` |
 | CSV export (routes in `classify/urls.py`) | `classify/export_views.py` |

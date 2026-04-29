@@ -255,7 +255,7 @@ Some checkers call **`GET /auth/github`** then **`GET /auth/github/callback`** w
 
 ## CI
 
-GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on **`master`** (lint, tests on SQLite + Postgres, pip-audit). Push that file so the remote repo reports CI.
+GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on **`master`** for **push** and **pull_request**: **SQLite** job (migrate, `check`, `test`) and **PostgreSQL 16** job (`DATABASE_URL` + `test`). Commit and push `.github/` to the repo GitHub inspects.
 
 ---
 

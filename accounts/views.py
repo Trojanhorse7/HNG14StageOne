@@ -118,16 +118,21 @@ class GitHubCallbackView(View):
             return HttpResponseRedirect(_portal_redirect({"error": "account_inactive"}))
 
         access, refresh_raw = issue_token_pair(user)
-        response = HttpResponseRedirect(_portal_redirect({"login": "success"}))
+        response = HttpResponseRedirect(
+            _portal_redirect({"login": "success"}, path="app/dashboard")
+        )
         _set_auth_cookies(response, access, refresh_raw)
         return response
 
 
-def _portal_redirect(query: dict) -> str:
+def _portal_redirect(query: dict, path: str = "") -> str:
+    """Build portal URL. Errors default to site root; post-login uses SPA app path."""
     base = settings.WEB_PORTAL_ORIGIN.rstrip("/")
-    if not query:
-        return f"{base}/"
-    return f"{base}/?{urlencode(query)}"
+    path = path.strip("/")
+    url = f"{base}/{path}" if path else f"{base}/"
+    if query:
+        return f"{url}?{urlencode(query)}"
+    return url
 
 
 def _set_auth_cookies(response, access: str, refresh: str) -> None:

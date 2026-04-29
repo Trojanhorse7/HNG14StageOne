@@ -21,6 +21,7 @@ ALLOWED_LIST_PARAMS = frozenset(
         "order",
         "page",
         "limit",
+        "format",  # export only; ignored by list parser output
     }
 )
 

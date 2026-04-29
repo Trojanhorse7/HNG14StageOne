@@ -35,10 +35,14 @@ class ProfileExportView(APIView):
     permission_classes = [IsActiveInsightaUser]
 
     def get(self, request: Request) -> HttpResponse | Response:
-        fmt = request.query_params.get("format", "").strip().lower()
+        # Use export_format, not "format" — DRF consumes ?format= for renderers (404 for csv).
+        fmt = request.query_params.get("export_format", "").strip().lower()
         if fmt != "csv":
             return Response(
-                {"status": "error", "message": "Invalid or missing format parameter"},
+                {
+                    "status": "error",
+                    "message": "Invalid or missing export_format parameter (use export_format=csv)",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

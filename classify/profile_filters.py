@@ -21,7 +21,8 @@ ALLOWED_LIST_PARAMS = frozenset(
         "order",
         "page",
         "limit",
-        "format",  # export only; ignored by list parser output
+        # DRF reserves it for ?format=json|api and breaks ?format=csv.
+        "export_format",  # export only; ignored by list parser output
     }
 )
 

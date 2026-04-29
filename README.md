@@ -118,7 +118,11 @@ List with **filters**, **sort**, **pagination**; optional **`total_pages`** and 
 
 Query parameters: same as before (`gender`, `age_group`, `country_id`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`, `sort_by`, `order`, `page`, `limit` ≤ 50). Unknown keys → **422**.
 
-### `GET /api/profiles/export?format=csv&...`
+### `GET /api/profiles/export?export_format=csv&...`
+
+Routes live in **`classify/urls.py`**.
+
+Use **`export_format=csv`**, not `format=csv` — Django REST Framework reserves **`?format=`** for response negotiation (`json`, `api`, …) and **`?format=csv`** returns **404** before this view runs.
 
 Streaming CSV with the **same filter/sort parameters** as list (no pagination). Filename includes timestamp.
 
@@ -215,7 +219,9 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | Rate limit middleware + request logging | `accounts/rate_limit_middleware.py` |
 | DRF error envelope | `accounts/exception_handlers.py` |
 | Admin role CLI | `accounts/management/commands/set_user_role.py` |
-| Profiles + NL search + export | `classify/profile_views.py`, `classify/nl_query.py` |
+| Root URLconf (includes only) | `config/urls.py` |
+| Profiles + NL search | `classify/profile_views.py`, `classify/nl_query.py` |
+| CSV export (routes in `classify/urls.py`) | `classify/export_views.py` |
 | Settings (CORS, CSRF, REST_FRAMEWORK, lifetimes) | `config/settings.py` |
 
 ---

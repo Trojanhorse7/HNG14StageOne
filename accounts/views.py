@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
@@ -53,24 +53,14 @@ def _web_callback_url() -> str:
     return f"{base}/auth/github/callback"
 
 
-def _cli_oauth_forward_query(query) -> str:
-    """
-    Redirect browser to the CLI loopback with OAuth query params.
-    GitHub OAuth Apps allow only one callback URL — the web uses this API route;
-    unknown server state is treated as CLI and forwarded here.
-    """
+def _expected_cli_oauth_redirect_uri() -> str:
+    """Must match GitHub OAuth App callback for the CLI and the redirect_uri sent with the code."""
     base = (settings.INSIGHTA_CLI_OAUTH_REDIRECT or "").strip()
-    if not base:
-        base = "http://127.0.0.1:8765/callback"
-    parsed = urlparse(base)
-    path = parsed.path if parsed.path else "/"
-    items: list[tuple[str, str]] = []
-    for key in ("code", "state", "error", "error_description", "error_uri"):
-        val = query.get(key)
-        if val:
-            items.append((key, val))
-    qstr = urlencode(items)
-    return urlunparse((parsed.scheme, parsed.netloc, path, "", qstr, ""))
+    return base if base else "http://127.0.0.1:8765/callback"
+
+
+def _normalize_redirect_uri(uri: str) -> str:
+    return str(uri).strip().rstrip("/")
 
 
 def _purge_expired_oauth_states() -> None:
@@ -101,7 +91,7 @@ class GitHubLoginRedirectView(View):
 
 
 class GitHubCallbackView(View):
-    """GitHub redirects here once; browser flow uses server PKCE state, CLI is forwarded to loopback."""
+    """GitHub redirects here for the browser/portal OAuth app only (state in GitHubOAuthState)."""
 
     def get(self, request):
         code = request.GET.get("code")
@@ -136,6 +126,7 @@ class GitHubCallbackView(View):
                     code=code,
                     code_verifier=verifier,
                     redirect_uri=_web_callback_url(),
+                    app="web",
                 )
                 gh_access = token_json["access_token"]
                 profile = fetch_github_user(gh_access)
@@ -156,10 +147,9 @@ class GitHubCallbackView(View):
             _set_auth_cookies(response, access, refresh_raw)
             return response
 
-        # No server OAuth row → CLI flow (single registered GitHub callback is this URL).
-        if not gh_error and not code:
-            return HttpResponseRedirect(_portal_redirect({"error": "invalid_state"}))
-        return HttpResponseRedirect(_cli_oauth_forward_query(request.GET))
+        return HttpResponseRedirect(
+            _portal_redirect({"error": "invalid_oauth_state"}),
+        )
 
 
 def _portal_redirect(query: dict, path: str = "") -> str:
@@ -322,11 +312,11 @@ class WebLogoutView(View):
 @method_decorator(csrf_exempt, name="dispatch")
 class GitHubCliExchangeView(APIView):
     """
-    CLI completes OAuth: after GitHub hits /auth/github/callback, the API redirects to
-    loopback with ?code=&state=; CLI POSTs here with code_verifier.
+    CLI OAuth uses a separate GitHub OAuth App whose callback is the local listener
+    (INSIGHTA_CLI_OAUTH_REDIRECT, e.g. http://127.0.0.1:8765/callback).
 
-    Request JSON: code, code_verifier, redirect_uri (must be {API}/auth/github/callback —
-    the single URL registered on the GitHub OAuth App).
+    After GitHub redirects to that URL with ?code=, the CLI POSTs here with code_verifier
+    and the same redirect_uri used in the authorize request.
     """
 
     authentication_classes: list = []
@@ -334,9 +324,14 @@ class GitHubCliExchangeView(APIView):
     throttle_classes = [AuthBurstThrottle]
 
     def post(self, request: Request) -> Response:
-        if not settings.GITHUB_CLIENT_ID:
+        cli_id = getattr(settings, "GITHUB_CLI_CLIENT_ID", "").strip()
+        cli_secret = getattr(settings, "GITHUB_CLI_CLIENT_SECRET", "").strip()
+        if not cli_id or not cli_secret:
             return Response(
-                {"status": "error", "message": "GitHub OAuth is not configured"},
+                {
+                    "status": "error",
+                    "message": "GitHub CLI OAuth is not configured (GITHUB_CLI_CLIENT_ID and GITHUB_CLI_CLIENT_SECRET required)",
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         code = request.data.get("code")
@@ -347,12 +342,12 @@ class GitHubCliExchangeView(APIView):
                 {"status": "error", "message": "Missing or empty parameter"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        expected = _web_callback_url()
-        if str(redirect_uri).strip().rstrip("/") != expected.rstrip("/"):
+        expected = _normalize_redirect_uri(_expected_cli_oauth_redirect_uri())
+        if _normalize_redirect_uri(str(redirect_uri)) != expected:
             return Response(
                 {
                     "status": "error",
-                    "message": "redirect_uri must match the API GitHub callback URL",
+                    "message": "redirect_uri must match INSIGHTA_CLI_OAUTH_REDIRECT (CLI GitHub app callback URL)",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -361,6 +356,7 @@ class GitHubCliExchangeView(APIView):
                 code=str(code),
                 code_verifier=str(code_verifier),
                 redirect_uri=str(redirect_uri),
+                app="cli",
             )
             gh_access = token_json["access_token"]
             profile = fetch_github_user(gh_access)

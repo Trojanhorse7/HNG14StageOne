@@ -46,14 +46,17 @@ One-off **admin** by GitHub login (`User.username`):
 
 **GitHub OAuth (browser):**
 
-1. **`GET /auth/github`** — starts PKCE flow; GitHub redirects to **`{BACKEND_PUBLIC_URL}/auth/github/callback`**.
-2. Callback sets **`insighta_access`** / **`insighta_refresh`** (http-only) and redirects to **`WEB_PORTAL_ORIGIN`**.
+1. **`GET /auth/github`** — starts PKCE flow using **`GITHUB_CLIENT_ID`**; GitHub redirects to **`{BACKEND_PUBLIC_URL}/auth/github/callback`**.
+2. The API exchanges the code with **`GITHUB_CLIENT_ID`** / **`GITHUB_CLIENT_SECRET`** and sets **`insighta_access`** / **`insighta_refresh`** (http-only), then redirects to **`WEB_PORTAL_ORIGIN`**.
 
-**CLI OAuth** (GitHub **OAuth Apps** allow a **single** callback URL — use the API’s):
+**CLI OAuth (separate GitHub OAuth App):**
 
-1. Register **`{BACKEND_PUBLIC_URL}/auth/github/callback`** on the GitHub OAuth App (same as the browser flow).
-2. CLI opens GitHub with `redirect_uri` = that URL. GitHub hits the API callback; if the `state` is not a server-started browser session, the API **302**s to **`INSIGHTA_CLI_OAUTH_REDIRECT`** (default `http://127.0.0.1:8765/callback`) with `code` / `error` query params for the local CLI listener.
-3. **`POST /auth/github/cli`** with `code`, `code_verifier`, and `redirect_uri` = **`{BACKEND_PUBLIC_URL}/auth/github/callback`** (must match step 1).
+Register a **second** OAuth App for **`insighta-cli`**. Its **Authorization callback URL** on GitHub must be exactly **`INSIGHTA_CLI_OAUTH_REDIRECT`** (default **`http://127.0.0.1:8765/callback`** — GitHub redirects **directly** to the CLI listener).
+
+1. **`GITHUB_CLI_CLIENT_ID`** + **`GITHUB_CLI_CLIENT_SECRET`** — required on the API. **`POST /auth/github/cli`** exchanges codes using these credentials only.
+2. The CLI opens GitHub with the **CLI** client id and `redirect_uri` = that same loopback URL. After approval, GitHub sends `?code=` to the local server; the CLI **`POST /auth/github/cli`** with `code`, `code_verifier`, and **`redirect_uri`** (must match **`INSIGHTA_CLI_OAUTH_REDIRECT`** server-side).
+
+The portal callback **`/auth/github/callback`** is **only** for the browser OAuth app; unknown `state` there redirects to the portal with an error (no CLI forwarding).
 
 **RBAC:**
 
@@ -190,11 +193,12 @@ Body shape (typical): `{ "status": "error", "message": "<string>" }`.
 | `DJANGO_SECRET_KEY` | Django signing; use strong secret in production |
 | `JWT_SIGNING_KEY` | Optional separate HS256 key for JWTs |
 | `DATABASE_URL` | Postgres URL (omit for SQLite) |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth **portal** app |
+| `GITHUB_CLI_CLIENT_ID` / `GITHUB_CLI_CLIENT_SECRET` | Optional GitHub OAuth **CLI** app (same callback URL as portal app; omit to use one app for both) |
 | `BACKEND_PUBLIC_URL` | Public API base (OAuth callback URL) |
 | `WEB_PORTAL_ORIGIN` | SPA origin (post-login redirect; CORS/CSRF) |
 | `CORS_EXTRA_ORIGINS` | Optional extra allowed origins (comma-separated) |
-| `INSIGHTA_CLI_OAUTH_REDIRECT` | CLI: browser redirect target after API callback (must match CLI listener; default `http://127.0.0.1:8765/callback`) |
+| `INSIGHTA_CLI_OAUTH_REDIRECT` | Allowlisted **`redirect_uri`** for **`POST /auth/github/cli`**; must match the CLI OAuth App’s GitHub callback (loopback, e.g. `http://127.0.0.1:8765/callback`) |
 | `ACCESS_TOKEN_LIFETIME_SECONDS` / `REFRESH_TOKEN_LIFETIME_SECONDS` | JWT access / opaque refresh lifetimes |
 | `DEBUG` | **`false`** in production: auth/CSRF cookies use **Secure** + **SameSite=None** for cross-site SPAs. **`true`** (local dev) uses **Lax** and non-secure CSRF defaults. See `config/settings.py`. |
 

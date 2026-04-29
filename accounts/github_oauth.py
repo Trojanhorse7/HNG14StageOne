@@ -32,8 +32,10 @@ def build_authorize_url(
     code_challenge: str,
     scope: str = "read:user user:email",
 ) -> str:
+    """Portal flow only — uses GITHUB_CLIENT_ID."""
+    cid = (settings.GITHUB_CLIENT_ID or "").strip()
     q = {
-        "client_id": settings.GITHUB_CLIENT_ID,
+        "client_id": cid,
         "redirect_uri": redirect_uri,
         "state": state,
         "response_type": "code",
@@ -44,23 +46,38 @@ def build_authorize_url(
     return f"{GITHUB_AUTHORIZE_URL}?{urlencode(q)}"
 
 
+def _github_oauth_credentials(app: str) -> tuple[str, str]:
+    """Return (client_id, client_secret) for web (portal) or dedicated cli OAuth App."""
+    if app == "cli":
+        cid = getattr(settings, "GITHUB_CLI_CLIENT_ID", "").strip()
+        secret = getattr(settings, "GITHUB_CLI_CLIENT_SECRET", "").strip()
+        return cid, secret
+    cid = (settings.GITHUB_CLIENT_ID or "").strip()
+    secret = (settings.GITHUB_CLIENT_SECRET or "").strip()
+    return cid, secret
+
+
 def exchange_code_for_token(
     *,
     code: str,
     code_verifier: str,
     redirect_uri: str,
+    app: str = "web",
 ) -> dict[str, Any]:
-    """POST to GitHub; returns JSON including access_token (GitHub) or raises on error."""
+    """POST to GitHub; returns JSON including access_token (GitHub) or raises on error.
+
+    ``web`` uses GITHUB_CLIENT_*; ``cli`` uses GITHUB_CLI_CLIENT_* only (no fallback).
+    """
     headers = {
         "Accept": "application/json",
     }
+    client_id, secret = _github_oauth_credentials(app)
     data: dict[str, str] = {
-        "client_id": settings.GITHUB_CLIENT_ID,
+        "client_id": client_id,
         "code": code,
         "redirect_uri": redirect_uri,
         "code_verifier": code_verifier,
     }
-    secret = getattr(settings, "GITHUB_CLIENT_SECRET", "").strip()
     if secret:
         data["client_secret"] = secret
 

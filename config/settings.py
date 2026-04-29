@@ -134,12 +134,17 @@ REST_FRAMEWORK = {
 }
 
 # --- Insighta Labs+ auth (GitHub OAuth + JWT) ---
+# Portal: GET /auth/github → GITHUB_CLIENT_*; callback {BACKEND_PUBLIC_URL}/auth/github/callback
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "").strip()
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+# CLI (insighta-cli): separate OAuth App; callback must match INSIGHTA_CLI_OAUTH_REDIRECT (loopback).
+GITHUB_CLI_CLIENT_ID = os.environ.get("GITHUB_CLI_CLIENT_ID", "").strip()
+GITHUB_CLI_CLIENT_SECRET = os.environ.get("GITHUB_CLI_CLIENT_SECRET", "").strip()
 JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", "").strip()
 BACKEND_PUBLIC_URL = os.environ.get(
     "BACKEND_PUBLIC_URL", "http://localhost:8000"
 ).strip()
+# Authorization callback URL on GitHub must be exactly this (loopback; CLI binds here):
 INSIGHTA_CLI_OAUTH_REDIRECT = os.environ.get(
     "INSIGHTA_CLI_OAUTH_REDIRECT", "http://127.0.0.1:8765/callback"
 ).strip()

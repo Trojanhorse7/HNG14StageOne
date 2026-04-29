@@ -118,7 +118,7 @@ class GitHubCallbackView(View):
             return HttpResponseRedirect(_portal_redirect({"error": "account_inactive"}))
 
         access, refresh_raw = issue_token_pair(user)
-        response = HttpResponseRedirect(_portal_redirect({}))
+        response = HttpResponseRedirect(_portal_redirect({"login": "success"}))
         _set_auth_cookies(response, access, refresh_raw)
         return response
 

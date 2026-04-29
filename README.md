@@ -23,6 +23,8 @@ python manage.py seed_profiles   # optional; reads seed_profiles.json
 python manage.py runserver 0.0.0.0:8000
 ```
 
+One-off **admin** by GitHub login (`User.username`): `python manage.py set_user_role Trojanhorse7` (optional `--role analyst`).
+
 `DATABASE_URL` selects Postgres; if unset, **`db.sqlite3`** in the project root is used.
 
 **`seed_profiles`:** re-running **updates** rows by unique `name`. Batching: `SEED_POSTGRES_BATCH` (default **250**), or `python manage.py seed_profiles --batch 500`.

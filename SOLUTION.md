@@ -167,6 +167,33 @@ k6 run -e TOKEN -e BASE scripts/k6_profiles_smoke.js
 
 Read the **`http_req_duration`** line at the end: **`med`** is ~**p50**, **`p(95)`** is **p95**. To fail the script when breaching SLA, uncomment **`thresholds`** inside `scripts/k6_profiles_smoke.js`.
 
+**Leapcell (`BASE`):** Tokens from **`python manage.py issue_tokens Trojanhorse7`** work against **`https://14tagene-trojanhorse76785-85k14n3n.leapcell.dev`** when that deployment shares the same auth DB and **`SECRET_KEY`** as the env that minted them (JWT sub matches). **Mint a fresh pair per `SCENARIO` run** when chaining **`list`**, **`heavy`**, and **`search`**: **`POST /auth/refresh`** is **10/min per IP**, so overlapping runs can **429** refresh and cascade to profile **401** if the access JWT is expired.
+
+Git Bash (**one scenario per mint**):
+
+```bash
+cd /path/to/STAGE_ONE
+BASE="https://14tagene-trojanhorse76785-85k14n3n.leapcell.dev"
+export BASE
+OUT="$(python manage.py issue_tokens Trojanhorse7 2>&1)"
+export TOKEN="$(echo "$OUT" | sed -n 's/^access_token=//p')"
+export REFRESH_TOKEN="$(echo "$OUT" | sed -n 's/^refresh_token=//p')"
+export SCENARIO=list   # or heavy / search before each separate k6 run
+k6 run -e TOKEN -e REFRESH_TOKEN -e BASE -e SCENARIO scripts/k6_profiles_smoke.js
+```
+
+PowerShell (**same mint pattern**):
+
+```powershell
+Set-Location C:\path\to\STAGE_ONE
+$env:BASE = 'https://14tagene-trojanhorse76785-85k14n3n.leapcell.dev'
+$mint = python manage.py issue_tokens Trojanhorse7 2>&1 | Out-String
+if ($mint -match 'access_token=(.+)') { $env:TOKEN = $Matches[1].Trim() }
+if ($mint -match 'refresh_token=(.+)') { $env:REFRESH_TOKEN = $Matches[1].Trim() }
+$env:SCENARIO = 'list'   # or heavy / search
+k6 run -e TOKEN -e REFRESH_TOKEN -e BASE -e SCENARIO scripts/k6_profiles_smoke.js
+```
+
 Optional quick check (**hey**):
 
 ```bash
@@ -178,15 +205,17 @@ hey -n 200 -c 10 \
 
 (hey prints some percentiles but k6 is clearer for **p95**. High **`hey -c`** with one token hits the same **60/min** cap and mostly **429**.)
 
-### Results table — **paste your measured values**
+### Results table
 
-_Assignment target: comfortably sub-500 ms median and sub-2 s p95 where the stack allows; depends on dataset, region, and plan._
+_Assignment guidance: comfortably sub-500 ms median and sub-2 s p95 where the stack allows._
 
-| Scenario | Tool | k6 load shape | Profile rows (approx) | p50 (ms) | p95 (ms) | Notes |
-|----------|------|----------------|-------------------------|-----------|-----------|-------|
-| `GET /api/profiles?page=1&limit=50` default sort | k6 `SCENARIO=list` | ~50 iter/min × 2m (`constant-arrival-rate`) | | | | Same script for all scenarios; respects per-user throttle. |
-| Heavy filter (`country_id` + `min_country_probability`) | k6 `SCENARIO=heavy` | ditto | | | | |
-| `GET /api/profiles/search?...` | k6 `SCENARIO=search` | ditto | | | | |
+**Recorded probe (Leapcell)** — **`BASE`** **`https://14tagene-trojanhorse76785-85k14n3n.leapcell.dev`**, **`k6 v2.0.0-rc1`**, user **`Trojanhorse7`**, ~**50** iteration starts per minute for **2 min**, **`REFRESH_TOKEN`** enabled (**1 VU**). **`Profile.total`** from API **`2035`**. Timing is wall-clock from this host to Leapcell (**network dominates**):
+
+| Scenario | Tool | k6 load shape | Profile rows | p50 (ms) | p95 (ms) | Notes |
+|----------|------|----------------|----------------|----------|----------|-------|
+| `GET /api/profiles?page=1&limit=50` default sort | k6 `SCENARIO=list` | ~50 iter/min × 2m | 2035 | **548** | **716** | `http_req_duration` **`med`** / **`p(95)`** |
+| Heavy filter (`country_id` + `min_country_probability`) | k6 `SCENARIO=heavy` | ditto | 2035 | **563** | **1090** | Fresh mint before run (see above). |
+| `GET /api/profiles/search?q=male&page=1&limit=50` | k6 `SCENARIO=search` | ditto | 2035 | **546** | **2620** | p95 above 2 s target; search path more variable. |
 
 _Add optional “before optimization” runs only if you still have git history / an old deployment to compare._
 

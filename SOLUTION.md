@@ -113,7 +113,9 @@ Copy the printed **`access_token`**. **Long scripted runs**: also copy **`refres
 
 This repo ships **`scripts/k6_profiles_smoke.js`**. **`TOKEN`** carries the JWT access value; **`REFRESH_TOKEN`** is optional opaque refresh (`issue_tokens` prints both). With refresh set, the script runs **one VU** by default (the API **rotates** refresh on each call, so parallel VUs sharing one pair invalidate each other's chain). **`K6_PARALLEL_WITH_REFRESH=1`** turns multi-VU back on — only for experimentation.
 
-Examples (Git Bash / PowerShell equivalents for **`export`**):
+Examples — **Git Bash** and **PowerShell** (prefer **single quotes** around JWTs so nothing is interpolated).
+
+**Git Bash:**
 
 **Default list** (steady **~50 req/min × 2m** — one JWT shares **60/minute** throttle; exceeding it yields **429** and failed `status 200` checks):
 
@@ -125,16 +127,42 @@ export BASE="https://your-api.example.com"   # no trailing slash
 k6 run -e TOKEN -e REFRESH_TOKEN -e BASE scripts/k6_profiles_smoke.js
 ```
 
+**PowerShell (Windows)** — JWT must be one continuous string (three segments separated by **`.`**). If **`issue_tokens`** wraps output, paste the entire token on one line.
+
+```powershell
+Set-Location C:\path\to\STAGE_ONE
+$env:TOKEN = 'paste_full_jwt_access_here'
+$env:REFRESH_TOKEN = 'opaque_refresh_if_long_run_optional'  # omit line if unused
+$env:BASE = 'https://your-api.example.com'
+k6 run -e TOKEN -e REFRESH_TOKEN -e BASE scripts/k6_profiles_smoke.js
+```
+
+**Or** omit **`-e`** entries and inherit the shell session (**`TOKEN`** etc. already set on **`$env:`**):
+
+```powershell
+k6 run scripts/k6_profiles_smoke.js
+```
+
 **Search scenario:**
 
 ```bash
 k6 run -e TOKEN -e BASE -e SCENARIO="search" scripts/k6_profiles_smoke.js
 ```
 
+```powershell
+$env:SCENARIO = 'search'
+k6 run -e TOKEN -e BASE scripts/k6_profiles_smoke.js
+```
+
 **Filter-heavy list:**
 
 ```bash
 k6 run -e TOKEN -e BASE -e SCENARIO="heavy" scripts/k6_profiles_smoke.js
+```
+
+```powershell
+$env:SCENARIO = 'heavy'
+k6 run -e TOKEN -e BASE scripts/k6_profiles_smoke.js
 ```
 
 Read the **`http_req_duration`** line at the end: **`med`** is ~**p50**, **`p(95)`** is **p95**. To fail the script when breaching SLA, uncomment **`thresholds`** inside `scripts/k6_profiles_smoke.js`.

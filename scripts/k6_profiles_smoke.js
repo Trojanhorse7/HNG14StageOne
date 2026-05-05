@@ -14,7 +14,8 @@
  * This script uses constant-arrival-rate well under that. Increase `rate` only if limits change.
  *
  * Examples:
- *   k6 run -e TOKEN="$(cat token.txt)" -e BASE="https://api.example.com" scripts/k6_profiles_smoke.js
+ *   Bash: k6 run -e TOKEN="$(cat token.txt)" -e BASE="https://api.example.com" scripts/k6_profiles_smoke.js
+ *   PowerShell: $env:TOKEN = 'jwt...'; $env:BASE = 'https://api.example.com'; k6 run scripts/k6_profiles_smoke.js
  *   k6 run -e TOKEN="..." -e REFRESH_TOKEN="..." -e SCENARIO="search" scripts/k6_profiles_smoke.js
  */
 

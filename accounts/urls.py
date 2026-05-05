@@ -1,4 +1,5 @@
-"""Auth routes (not under /api/)."""
+"""URLConf for browser + JSON auth routes mounted at the site root (not under `/api`)."""
+
 
 from django.urls import path
 

@@ -1,4 +1,4 @@
-"""One-off: set Insighta user role by GitHub username (User.username)."""
+"""Promote/demote users between analyst/admin by matching GitHub `User.username`."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from accounts.models import User, UserRole
 
 
 class Command(BaseCommand):
+    """One-off role updates for operators wiring the first admin after GitHub login."""
+
     help = "Set role for a user (matches User.username case-insensitively, e.g. GitHub login)."
 
     def add_arguments(self, parser) -> None:

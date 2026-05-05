@@ -1,10 +1,14 @@
-"""CRUD API for persisted profiles (HNG Stage 1)."""
+"""REST views for profile collection, natural-language search, detail, and cache-aware list reads.
+
+List + search responses are cached briefly; admin create/delete/import bump the cache generation.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
 
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.request import Request
@@ -12,6 +16,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsActiveInsightaUser, IsInsightaAdmin
+from classify.filter_canonical import (
+    bump_profile_query_cache_generation,
+    canonical_filters,
+    profile_list_search_cache_key,
+)
 from classify.models import Profile
 from classify.nl_query import parse_nl_query
 from classify.pagination_links import build_pagination_links, total_pages_count
@@ -34,9 +43,11 @@ ERR_UNABLE_INTERPRET = "Unable to interpret query"
 
 LIST_PATH = "/api/profiles"
 SEARCH_PATH = "/api/profiles/search"
+LIST_SEARCH_CACHE_TIMEOUT = 90  # Keep in sync with settings.CACHES["default"]["TIMEOUT"]
 
 
 def _utc_iso_z(dt: datetime) -> str:
+    """Format aware datetimes as UTC ISO-8601 with Z suffix for JSON payloads."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     else:
@@ -45,6 +56,7 @@ def _utc_iso_z(dt: datetime) -> str:
 
 
 def _full_profile_dict(p: Profile) -> dict:
+    """Serialize a Profile ORM row to the public API `data` object shape."""
     return {
         "id": str(p.id),
         "name": p.name,
@@ -60,6 +72,7 @@ def _full_profile_dict(p: Profile) -> dict:
 
 
 def _parse_name_from_body(data) -> tuple[str | None, Response | None]:
+    """Extract non-empty string `name` from JSON body or return an error Response."""
     if not isinstance(data, dict):
         return None, Response(
             {"status": "error", "message": ERR_NAME_TYPE},
@@ -91,6 +104,8 @@ def _parse_name_from_body(data) -> tuple[str | None, Response | None]:
 
 
 class ProfileListCreateView(APIView):
+    """GET `/api/profiles` (filtered list + pagination) or POST admin create via upstream aggregate APIs."""
+
     def get_permissions(self):
         if self.request.method == "POST":
             return [
@@ -100,6 +115,7 @@ class ProfileListCreateView(APIView):
         return [IsActiveInsightaUser()]
 
     def get(self, request: Request) -> Response:
+        """Return cached page if present else query DB, serialize, and populate shared cache."""
         try:
             parsed = parse_list_query_params(request.query_params)
         except ValueError as e:
@@ -123,6 +139,18 @@ class ProfileListCreateView(APIView):
         )
         fdict = {k: parsed[k] for k in filter_keys if k in parsed}
 
+        cache_key = profile_list_search_cache_key(
+            kind="list",
+            filters_json=canonical_filters(fdict),
+            page=page,
+            limit=limit,
+            sort_by=sort_by,
+            order=order,
+        )
+        hit = cache.get(cache_key)
+        if hit is not None:
+            return Response(hit, status=status.HTTP_200_OK)
+
         qs = Profile.objects.all()
         qs = apply_filters(qs, fdict)
         total = qs.count()
@@ -137,21 +165,24 @@ class ProfileListCreateView(APIView):
             limit=limit,
             total=total,
         )
+        payload = {
+            "status": "success",
+            "page": int(page),
+            "limit": int(limit),
+            "total": int(total),
+            "total_pages": int(total_pages_count(total, limit)),
+            "links": links,
+            "data": [_full_profile_dict(p) for p in rows],
+        }
+        cache.set(cache_key, payload, timeout=LIST_SEARCH_CACHE_TIMEOUT)
         return Response(
-            {
-                "status": "success",
-                "page": int(page),
-                "limit": int(limit),
-                "total": int(total),
-                "total_pages": int(total_pages_count(total, limit)),
-                "links": links,
-                "data": [_full_profile_dict(p) for p in rows],
-            },
+            payload,
             status=status.HTTP_200_OK,
         )
 
     def post(self, request: Request) -> Response:
-        name, err = _parse_name_from_body(request.data)
+        """Create Profile from Genderize/Agify/Nationalize aggregation; idempotent on duplicate name."""
+
         if err:
             return err
 
@@ -202,6 +233,7 @@ class ProfileListCreateView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        bump_profile_query_cache_generation()
         return Response(
             {"status": "success", "data": _full_profile_dict(profile)},
             status=status.HTTP_201_CREATED,
@@ -209,7 +241,10 @@ class ProfileListCreateView(APIView):
 
 
 class ProfileSearchView(APIView):
+    """GET `/api/profiles/search`: turns `q` into filters, then same list+cache path as collection."""
+
     def get(self, request: Request) -> Response:
+        """Parse NL into filters, serve from cache or DB, cache successful JSON for this page."""
         try:
             parsed = parse_search_query_params(request.query_params)
         except ValueError as e:
@@ -235,6 +270,18 @@ class ProfileSearchView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
+        cache_key = profile_list_search_cache_key(
+            kind="search",
+            filters_json=canonical_filters(flt),
+            page=page,
+            limit=limit,
+            sort_by=sort_by,
+            order=order,
+        )
+        hit = cache.get(cache_key)
+        if hit is not None:
+            return Response(hit, status=status.HTTP_200_OK)
+
         qs = Profile.objects.all()
         qs = apply_filters(qs, flt)
         total = qs.count()
@@ -249,21 +296,25 @@ class ProfileSearchView(APIView):
             limit=limit,
             total=total,
         )
+        payload = {
+            "status": "success",
+            "page": int(page),
+            "limit": int(limit),
+            "total": int(total),
+            "total_pages": int(total_pages_count(total, limit)),
+            "links": links,
+            "data": [_full_profile_dict(p) for p in rows],
+        }
+        cache.set(cache_key, payload, timeout=LIST_SEARCH_CACHE_TIMEOUT)
         return Response(
-            {
-                "status": "success",
-                "page": int(page),
-                "limit": int(limit),
-                "total": int(total),
-                "total_pages": int(total_pages_count(total, limit)),
-                "links": links,
-                "data": [_full_profile_dict(p) for p in rows],
-            },
+            payload,
             status=status.HTTP_200_OK,
         )
 
 
 class ProfileDetailView(APIView):
+    """GET one profile by UUID, or DELETE it (admin); delete invalidates list/search cache."""
+
     def get_permissions(self):
         if self.request.method == "DELETE":
             return [
@@ -273,6 +324,7 @@ class ProfileDetailView(APIView):
         return [IsActiveInsightaUser()]
 
     def get(self, request: Request, profile_id: str) -> Response:
+        """Resolve UUID pk and return `{ status, data }` or generic 404 if missing."""
         try:
             pk = uuid.UUID(str(profile_id))
         except (ValueError, TypeError):
@@ -292,6 +344,7 @@ class ProfileDetailView(APIView):
         )
 
     def delete(self, request: Request, profile_id: str) -> Response:
+        """Hard-delete row and bump cached list generations so deletes become visible."""
         try:
             pk = uuid.UUID(str(profile_id))
         except (ValueError, TypeError):
@@ -305,4 +358,5 @@ class ProfileDetailView(APIView):
                 {"status": "error", "message": ERR_NOT_FOUND},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        bump_profile_query_cache_generation()
         return Response(status=status.HTTP_204_NO_CONTENT)

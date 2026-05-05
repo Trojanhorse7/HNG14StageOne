@@ -73,7 +73,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Migrate
-        run: python manage.py migrate --noinput
+        run: |
+          python manage.py migrate --noinput
+          python manage.py createcachetable django_cache
 
       - name: Run tests
         run: python manage.py test --verbosity=2

@@ -1,4 +1,4 @@
-"""Print access + refresh token pair for a user (submission / local testing)."""
+"""Management helper: print a JWT + opaque refresh for a given `User.username` (manual testing)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from accounts.tokens import issue_token_pair
 
 
 class Command(BaseCommand):
+    """Lookup active user by username and emit a fresh token pair to stdout."""
+
     help = (
         "Issue JWT access + opaque refresh for User.username (e.g. for grader forms). "
         "Does not print after this run — copy immediately."

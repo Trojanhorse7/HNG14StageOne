@@ -1,4 +1,5 @@
-"""CSV export view for profiles."""
+"""CSV export mirrors list filters via `export_format` (DRF reserves `format` for negotiators)."""
+
 
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from classify.profile_filters import (
 
 
 def _utc_iso_z(dt: datetime) -> str:
+    """Render datetimes consistently for CSV timestamps (UTC `Z`)."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     else:
@@ -32,10 +34,13 @@ def _utc_iso_z(dt: datetime) -> str:
 
 
 class ProfileExportView(APIView):
+    """Authenticated users export the filtered Profile queryset as streamed CSV."""
+
     permission_classes = [IsActiveInsightaUser]
 
     def get(self, request: Request) -> HttpResponse | Response:
-        # Use export_format, not "format" — DRF consumes ?format= for renderers (404 for csv).
+        """Build CSV matching list filters; rejects missing `export_format=csv`."""
+        # DRF steals `?format=` for renderers — export must use `export_format=csv`.
         fmt = request.query_params.get("export_format", "").strip().lower()
         if fmt != "csv":
             return Response(

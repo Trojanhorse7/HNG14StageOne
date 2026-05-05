@@ -45,6 +45,7 @@ Copy [`.env.example`](.env.example) to `.env` and set at least **`DJANGO_SECRET_
 
 ```bash
 python manage.py migrate
+python manage.py createcachetable django_cache   # PostgreSQL only — Django DB cache table for shared query-result cache + DRF throttle keys
 python manage.py seed_profiles   # optional; reads seed_profiles.json
 python manage.py runserver 0.0.0.0:8000
 ```
@@ -87,7 +88,7 @@ The portal callback **`/auth/github/callback`** is **only** for the browser OAut
 **RBAC:**
 
 - **Analyst:** `GET` profiles, classify, search, export.
-- **Admin:** same, plus **`POST /api/profiles`** and **`DELETE /api/profiles/{uuid}`** (`UserRole.ADMIN`).
+- **Admin:** same, plus **`POST /api/profiles`**, **`POST /api/profiles/import`** (CSV bulk), and **`DELETE /api/profiles/{uuid}`** (`UserRole.ADMIN`).
 
 ---
 
@@ -109,7 +110,7 @@ Limits are enforced in **two places** so `/api/*` can be keyed **after** JWT aut
 
 | Scope | Mechanism | Key | Budget |
 |--------|-----------|-----|--------|
-| **`/api/*`** (DRF) | `DEFAULT_THROTTLE_CLASSES` → `accounts.throttles.ApiUserThrottle` | Authenticated: **`user.pk`**; otherwise client IP | **60/min** |
+| **`/api/*`** (DRF) | `DEFAULT_THROTTLE_CLASSES` uses `accounts.throttles.ApiUserThrottle` | Authenticated: **`user.pk`**; otherwise client IP | **60/min** |
 | **`GET/POST /auth/me`**, **`POST /auth/refresh`**, **`POST /auth/logout`**, **`POST /auth/github/cli`** | `AuthBurstThrottle` on those views | Client IP | **10/min** |
 | **Other `/auth/*`** (e.g. **`/auth/csrf`**, **`/auth/github`**, **`/auth/refresh/web`**, **`/auth/logout/web`**) | `RateLimitMiddleware` (`accounts.rate_limit_middleware`) | Client IP | **10/min** |
 | **`/auth/github/callback`** | (no middleware IP bucket) | — | OAuth redirect bursts |
@@ -126,7 +127,7 @@ Implementation notes:
 - From **middleware**: `{ "status": "error", "message": "Too many requests" }`.
 - From **DRF throttles**: same envelope via `accounts.exception_handlers.insighta_exception_handler` (message describes the throttle).
 
-The in-process limiter is suitable for development/single-instance deploys; use a shared store (e.g. Redis) for multi-worker production if you need hard global caps.
+The **`/auth/*` IP limiter** stays in-process (`RateLimitMiddleware`). **`/api/*` DRF throttles** use Django’s default cache: **`DatabaseCache`** on PostgreSQL (shared across workers; same table as query cache) or **`LocMemCache` per process on SQLite.**
 
 **Request logging:** method, path, status, duration, and user id (when resolved) at **INFO** on `accounts.rate_limit_middleware` (`RequestLoggingMiddleware`).
 
@@ -142,9 +143,9 @@ Genderize-backed classification (legacy shape).
 
 ### `GET /api/profiles`
 
-List with **filters**, **sort**, **pagination**; optional **`total_pages`** and **`links`** (`self`, `next`, `prev`).
+List with **filters**, **sort**, **pagination**; optional **`total_pages`** and **`links`** (`self`, `next`, `prev`). PostgreSQL deployments cache successful list payloads in **`DatabaseCache`** (see `config/settings.py`; run **`createcachetable django_cache`**).
 
-Query parameters: same as before (`gender`, `age_group`, `country_id`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`, `sort_by`, `order`, `page`, `limit` ≤ 50). Unknown keys → **422**.
+Query parameters: same as before (`gender`, `age_group`, `country_id`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`, `sort_by`, `order`, `page`, `limit` ≤ 50). Unknown keys return **422**.
 
 ### `GET /api/profiles/export?export_format=csv&...`
 
@@ -156,7 +157,7 @@ Streaming CSV with the **same filter/sort parameters** as list (no pagination). 
 
 ### `GET /api/profiles/search?q=...&page=...&limit=...`
 
-Rule-based NL parser on `q`; same list payload shape as **`GET /api/profiles`**. Uninterpretable query → **422** (`Unable to interpret query`).
+Rule-based NL parser on `q`; same list payload shape as **`GET /api/profiles`** (also cacheable on Postgres under the same semantics). Uninterpretable query returns **422** (`Unable to interpret query`).
 
 ### `GET /api/profiles/{uuid}`
 
@@ -164,7 +165,16 @@ Single profile.
 
 ### `POST /api/profiles`
 
-**Admin only.** Body: `{ "name": "..." }`. Duplicate `name` returns existing profile **200**.
+**Admin only.** Body: `{ "name": "..." }`. Duplicate `name` returns existing profile **200**. Successful creates bump the cache generation so stale list/search pages refresh.
+
+### `POST /api/profiles/import`
+
+**Admin only.** `multipart/form-data` with **`file`** = UTF-8 CSV. Header must contain the profile columns (**`name`, `gender`, `gender_probability`, `age`, `age_group`, `country_id`, `country_name`, `country_probability`**). Optional **`id`** / **`created_at`** columns from our export format are skipped by name.
+
+Processes the file in a streaming CSV reader (`TextIOWrapper` over the upload) and persists rows in **`bulk_create` batches** (default **2000**). Rows are validated per field; skipped rows populate a **`reasons`** map (**`duplicate_name`, `invalid_age`, `missing_fields`, `malformed_row`, …). Partial success does not roll back already committed batches. Ends with **`{ "status", "total_rows", "inserted", "skipped", "reasons" }`**.
+
+Large uploads default to **≤200 MB** request bodies (`DATA_UPLOAD_MAX_MEMORY_SIZE`); override via env if your host permits.
+
 
 ### `DELETE /api/profiles/{uuid}`
 
@@ -179,8 +189,8 @@ Implementation: `classify/nl_query.py` (countries: `classify/country_data.py`). 
 1. **Normalize** the query: trim, lowercase, strip accents, replace punctuation with spaces, collapse whitespace.
 2. **Countries**: longest-match against the **65** seed country names with **word boundaries** (`(?<!\w)…(?!\w)` on normalized tokens).
 3. **Both genders**: phrases like `male and female` remove a single-gender filter; other cues still apply.
-4. **One gender**: `male`/`men`/… → `male`; `female`/… → `female`.
-5. **Age group words**: `child`/`teenager`/`adult`/`senior`/`elderly` → `age_group`; conflicts → unable to interpret.
+4. **One gender**: `male`/`men`/… map to `male`; `female`/… map to `female`.
+5. **Age group words**: `child`/`teenager`/`adult`/`senior`/`elderly` set `age_group`; conflicting groups yield unable to interpret.
 6. **“young”**: ages **16–24**; intersects with explicit `min_age` / `max_age` if present.
 7. **Numeric age**: `above N`, `below N`, etc. as documented previously in this section.
 8. Filler words (`people`, `from`, `in`, …) optional if other cues exist.

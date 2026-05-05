@@ -1,4 +1,7 @@
-"""Django settings — Stage 1 profiles API with PostgreSQL."""
+"""Django configuration: database, caching, CORS/CSRF, JWT auth, REST Framework.
+
+Load-time env is read via python-dotenv so local and deployed instances share one layout.
+"""
 
 import os
 from pathlib import Path
@@ -49,7 +52,7 @@ if _default_db_url:
     db_name = (parsed.path or "").lstrip("/")
     query = parse_qs(parsed.query)
     ssl_modes = query.get("sslmode") or query.get("ssl")
-    # libpq: request no statement timeout on connect. Many hosts still cap; seed also uses tiny batches.
+    # Long-running seed/migrations: ask PostgreSQL not to abort statements on connect.
     db_options: dict = {
         "options": "-c statement_timeout=0 -c lock_timeout=0",
     }
@@ -74,6 +77,34 @@ else:
             "NAME": os.path.join(os.path.dirname(os.path.dirname(__file__)), "db.sqlite3"),
         }
     }
+
+# List/search responses use Django's cache. Postgres: DatabaseCache (shared workers, needs
+# django_cache table). SQLite: LocMem (dev/tests, no setup).
+if DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql":
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "TIMEOUT": 90,
+            "OPTIONS": {"MAX_ENTRIES": 5000},
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "insighta_profile_query_cache",
+            "TIMEOUT": 90,
+        }
+    }
+
+# Streaming CSV uploads: cap in-memory buffering; Django spills bigger bodies to TEMP.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(
+    os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", str(200 * 1024 * 1024))
+)
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(
+    os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", str(10 * 1024 * 1024))
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -105,11 +136,10 @@ CORS_ALLOWED_ORIGINS = _origins_set
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = (*default_headers, "x-api-version")
 
-# Required when the SPA on a different origin POSTs with cookies + CSRF header.
+# POST from another origin with cookies requires the host listed here plus CSRF token.
 CSRF_TRUSTED_ORIGINS = _origins_set.copy()
 
-# Cross-site SPA (e.g. Vercel → API on another host): csrftoken must be sent on
-# credentialed fetch. SameSite=None requires Secure=True (use HTTPS + DEBUG=False).
+# CSRF cookie flags: lax local dev; production uses None + Secure so SPAs can send csrftoken.
 if DEBUG:
     CSRF_COOKIE_SECURE = False
     CSRF_COOKIE_SAMESITE = "Lax"
@@ -118,7 +148,7 @@ else:
     CSRF_COOKIE_SAMESITE = "None"
 
 REST_FRAMEWORK = {
-    # Default AnonymousUser from django.contrib.auth (requires auth + contenttypes apps).
+    # DRF gets JWT + django.contrib.auth (needed for AnonymousUser in throttles).
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "accounts.authentication.JWTAuthentication",
     ],
@@ -133,18 +163,15 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "accounts.exception_handlers.insighta_exception_handler",
 }
 
-# --- Insighta Labs+ auth (GitHub OAuth + JWT) ---
-# Portal: GET /auth/github → GITHUB_CLIENT_*; callback {BACKEND_PUBLIC_URL}/auth/github/callback
+# Portal uses GITHUB_CLIENT_*; insighta-cli uses GITHUB_CLI_* with loopback redirect.
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "").strip()
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
-# CLI (insighta-cli): separate OAuth App; callback must match INSIGHTA_CLI_OAUTH_REDIRECT (loopback).
 GITHUB_CLI_CLIENT_ID = os.environ.get("GITHUB_CLI_CLIENT_ID", "").strip()
 GITHUB_CLI_CLIENT_SECRET = os.environ.get("GITHUB_CLI_CLIENT_SECRET", "").strip()
 JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", "").strip()
 BACKEND_PUBLIC_URL = os.environ.get(
     "BACKEND_PUBLIC_URL", "http://localhost:8000"
 ).strip()
-# Authorization callback URL on GitHub must be exactly this (loopback; CLI binds here):
 INSIGHTA_CLI_OAUTH_REDIRECT = os.environ.get(
     "INSIGHTA_CLI_OAUTH_REDIRECT", "http://127.0.0.1:8765/callback"
 ).strip()
@@ -156,14 +183,14 @@ REFRESH_TOKEN_LIFETIME_SECONDS = int(
     os.environ.get("REFRESH_TOKEN_LIFETIME_SECONDS", "300")
 )
 
-# Grader / CI: optional browser callback shortcut (see README). Keep false in real production.
+# Grader/manual flows: pretend GitHub approved a fixed authorization code (see README).
 INSIGHTA_ENABLE_TEST_OAUTH_CODE = os.environ.get(
     "INSIGHTA_ENABLE_TEST_OAUTH_CODE", ""
 ).strip().lower() in ("1", "true", "yes")
 INSIGHTA_TEST_OAUTH_CODE = os.environ.get(
     "INSIGHTA_TEST_OAUTH_CODE", "test_code"
 ).strip()
-# When set, test_code JSON tokens use this admin; else first active admin by created_at.
+# When issuing test_code tokens: prefer this GitHub username as the admin subject.
 GRADER_ADMIN_USERNAME = os.environ.get("GRADER_ADMIN_USERNAME", "").strip()
 
 LOGGING = {

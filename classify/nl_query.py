@@ -1,9 +1,5 @@
-"""
-Rule-based natural language → profile filter mapping (no LLMs).
-
-All matching uses normalized, accent-stripped lowercase text with word boundaries
-where needed to avoid false positives (e.g. Niger vs Nigeria).
-"""
+"""NL to profile filter kwargs via regex rules (no ML).
+Normalized text + word boundaries reduce false country/gender matches."""
 
 from __future__ import annotations
 
@@ -13,16 +9,16 @@ from typing import Any
 
 from classify.country_data import COUNTRY_ID_TO_NAME
 
-# --- text normalization ---
-
 
 def _strip_accents(s: str) -> str:
+    """Strip combining marks so "Côte" matches the same letters as "cote"."""
     return "".join(
         c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
     )
 
 
 def _norm(s: str) -> str:
+    """Lowercase, de-accent, squash punctuation to spaces for robust token matching."""
     s = (s or "").lower().strip()
     s = _strip_accents(s)
     s = s.replace("'", " ").replace("’", " ")
@@ -31,10 +27,8 @@ def _norm(s: str) -> str:
     return s
 
 
-# --- country detection (longest name first) ---
-
-
 def _country_id_from_text(norm_q: str) -> str | None:
+    """Detect ISO2 by longest country name match first to avoid Niger vs Nigeria clashes."""
     if not norm_q:
         return None
     items = list(COUNTRY_ID_TO_NAME.items())
@@ -46,15 +40,13 @@ def _country_id_from_text(norm_q: str) -> str | None:
         if len(words) == 1:
             pat = rf"(?<!\w){re.escape(words[0])}(?!\w)"
         else:
-            # Build outside f-string: f-string expressions cannot contain backslashes (PEP 498).
+            # Build regex outside f-string: PEP 498 disallows backslashes inside `{...}`.
             middle = r"\W+".join(re.escape(w) for w in words)
             pat = rf"(?<!\w){middle}(?!\w)"
         if re.search(pat, norm_q, flags=re.IGNORECASE):
             return cid
     return None
 
-
-# --- main parser ---
 
 _YOUNG_MIN, _YOUNG_MAX = 16, 24
 
@@ -69,7 +61,7 @@ _BOTH_PATTERN = re.compile(
 def _merge_age(
     lo: int | None, hi: int | None, new_lo: int | None, new_hi: int | None
 ) -> tuple[int | None, int | None] | None:
-    """Intersect two inclusive age ranges. None means unbounded on that side."""
+    """Intersect interpreted age bounds; return None if constraints contradict."""
     l = new_lo if new_lo is not None else lo
     h = new_hi if new_hi is not None else hi
     if lo is not None and new_lo is not None:
@@ -90,10 +82,7 @@ def _merge_age(
 
 
 def parse_nl_query(q: str) -> dict[str, Any] | None:
-    """
-    Return filter kwargs compatible with the profiles queryset helper, or None
-    if the query cannot be interpreted.
-    """
+    """Map free text to `apply_filters` kwargs, or None when no safe interpretation exists."""
     if not (q and q.strip()):
         return None
 
@@ -106,7 +95,7 @@ def parse_nl_query(q: str) -> dict[str, Any] | None:
     min_age: int | None = None
     max_age: int | None = None
 
-    # remove "from / in" filler for recognition (keeps words for country match already done on full nq)
+    # Strip polite/filler tokens from `work`; country detection still scans full `nq` as well.
     work = nq
     for filler in (
         "people",

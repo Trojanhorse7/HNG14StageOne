@@ -1,4 +1,4 @@
-"""DRF throttles: per-user API budget; burst limit for selected auth endpoints."""
+"""DRF throttles layered on Django cache (DatabaseCache on Postgres, LocMem on SQLite)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from rest_framework.throttling import SimpleRateThrottle
 
 
 class ApiUserThrottle(SimpleRateThrottle):
-    """60/min keyed by authenticated user id, else client IP."""
+    """Burst-y API guard: prefer authenticated user id, else fall back to anonymous IP."""
 
     scope = "api_user"
 
     def get_cache_key(self, request, view) -> str | None:
+        """Prefer authenticated user id; anonymous clients fall back to client IP."""
         if request.user and getattr(request.user, "is_authenticated", False):
             ident = str(request.user.pk)
         else:
@@ -19,9 +20,10 @@ class ApiUserThrottle(SimpleRateThrottle):
 
 
 class AuthBurstThrottle(SimpleRateThrottle):
-    """10/min by IP for DRF login-adjacent endpoints (matches middleware for browser OAuth)."""
+    """Shared 10/min IP bucket for auth endpoints also enforced via middleware elsewhere."""
 
     scope = "auth_burst"
 
     def get_cache_key(self, request, view) -> str | None:
+        """Always throttle burst auth traffic by client IP (matches middleware policy)."""
         return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}

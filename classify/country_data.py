@@ -1,4 +1,5 @@
-"""ISO country_id -> full name (from seed data). Used for API responses and NL search."""
+"""ISO-3166 alpha-2 codes mapped to display names for APIs and NL parsing."""
+
 
 COUNTRY_ID_TO_NAME: dict[str, str] = {
     'AO': 'Angola',

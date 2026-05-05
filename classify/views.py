@@ -1,4 +1,5 @@
-"""GET /api/classify — Genderize.io integration."""
+"""Standalone Genderize classify endpoint kept for backwards compatibility with Stage 1 clients."""
+
 
 from datetime import datetime, timezone
 
@@ -20,9 +21,10 @@ def _utc_iso8601_z() -> str:
 
 
 class ClassifyNameView(APIView):
-    """Classify a given name using the Genderize API."""
+    """`GET /api/classify?name=` proxies Genderize.io responses into the legacy JSON shape."""
 
     def get(self, request: Request) -> Response:
+        """Handle single-name predictions including multi-value validation (422)."""
         name_values = request.GET.getlist("name")
 
         if len(name_values) > 1:

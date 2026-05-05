@@ -1,4 +1,5 @@
-"""JWT access tokens and opaque refresh tokens."""
+"""Mint HS256 access JWTs and random refresh tokens persisted as SHA-256 hashes."""
+
 
 from __future__ import annotations
 

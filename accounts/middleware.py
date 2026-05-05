@@ -1,4 +1,4 @@
-"""Require X-API-Version: 1 for all /api/* routes."""
+"""Reject `/api/*` calls missing `X-API-Version: 1` before they hit business logic."""
 
 from __future__ import annotations
 
@@ -12,10 +12,13 @@ ERR_MESSAGE = "API version header required"
 
 
 class ApiVersionMiddleware:
+    """Lightweight guardrail keeping public JSON contracts versioned."""
+
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]):
         self.get_response = get_response
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
+        """Compare header with constant `1` for any path under `/api`."""
         path = request.path
         if path.startswith("/api/") or path.rstrip("/") == "/api":
             raw = request.META.get(API_VERSION_HEADER)

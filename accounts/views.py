@@ -1,4 +1,7 @@
-"""GitHub OAuth (PKCE), token refresh, and logout."""
+"""High-level auth HTTP handlers: GitHub OAuth redirects, CSRF helper, JWT/session refresh.
+
+Browser flows set http-only cookies; machine clients use JSON bodies for refresh/logout.
+"""
 
 from __future__ import annotations
 
@@ -37,10 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 def _error(message: str, code: int = 400) -> JsonResponse:
+    """Uniform JSON error envelope for plain Django `View` handlers."""
     return JsonResponse({"status": "error", "message": message}, status=code)
 
 
 def _success_token_payload(access: str, refresh: str) -> dict:
+    """Success body for APIs that return bearer + refresh tokens in JSON (CLI)."""
     return {
         "status": "success",
         "access_token": access,
@@ -49,7 +54,8 @@ def _success_token_payload(access: str, refresh: str) -> dict:
 
 
 def _apply_cors_to_response(request, response):
-    """Ensure browser fetch() to /auth/github sees ACAO when Origin is allowlisted."""
+    """Mirror portal allowlist on selected `/auth/*` responses so browser preflights succeed."""
+
     origin = (request.META.get("HTTP_ORIGIN") or "").strip()
     allowed = getattr(settings, "CORS_ALLOWED_ORIGINS", ()) or ()
     allowed_norm = {str(o).rstrip("/") for o in allowed}
@@ -65,26 +71,30 @@ def _apply_cors_to_response(request, response):
 
 
 def _web_callback_url() -> str:
+    """Fully qualified `{BACKEND_PUBLIC_URL}/auth/github/callback` for the portal OAuth app."""
     base = settings.BACKEND_PUBLIC_URL.rstrip("/")
     return f"{base}/auth/github/callback"
 
 
 def _expected_cli_oauth_redirect_uri() -> str:
-    """Must match GitHub OAuth App callback for the CLI and the redirect_uri sent with the code."""
+    """Loopback redirect registered on the separate CLI GitHub OAuth application."""
     base = (settings.INSIGHTA_CLI_OAUTH_REDIRECT or "").strip()
     return base if base else "http://127.0.0.1:8765/callback"
 
 
 def _normalize_redirect_uri(uri: str) -> str:
+    """Lower noise on redirect URI equality checks (strip + drop trailing slash)."""
     return str(uri).strip().rstrip("/")
 
 
 def _purge_expired_oauth_states() -> None:
+    """GC table rows backing short-lived browser OAuth `state` to PKCE verifier mapping."""
     GitHubOAuthState.objects.filter(expires_at__lt=timezone.now()).delete()
 
 
 def _resolve_grader_admin_user() -> User | None:
-    """Admin user for INSIGHTA_TEST_OAUTH_CODE JSON response."""
+    """Locate the admin user optionally forced via `GRADER_ADMIN_USERNAME` for test OAuth."""
+
     uname = getattr(settings, "GRADER_ADMIN_USERNAME", "") or ""
     uname = str(uname).strip()
     if uname:
@@ -103,7 +113,7 @@ def _resolve_grader_admin_user() -> User | None:
 
 
 class GitHubLoginRedirectView(View):
-    """Start browser OAuth: store PKCE verifier server-side, redirect to GitHub."""
+    """Kick off browser login: persist PKCE verifier, redirect user to GitHub authorize."""
 
     def get(self, request):
         if not settings.GITHUB_CLIENT_ID:
@@ -129,7 +139,7 @@ class GitHubLoginRedirectView(View):
 
 
 class GitHubCallbackView(View):
-    """GitHub redirects here for the browser/portal OAuth app only (state in GitHubOAuthState)."""
+    """Complete browser login: validate `state`, exchange `code`, mint cookies or JSON tokens."""
 
     def get(self, request):
         code = request.GET.get("code")
@@ -215,7 +225,8 @@ class GitHubCallbackView(View):
 
 
 def _portal_redirect(query: dict, path: str = "") -> str:
-    """Build portal URL. Errors default to site root; post-login uses SPA app path."""
+    """Helper to build `WEB_PORTAL_ORIGIN` URLs for success/error query params."""
+
     base = settings.WEB_PORTAL_ORIGIN.rstrip("/")
     path = path.strip("/")
     url = f"{base}/{path}" if path else f"{base}/"
@@ -225,7 +236,8 @@ def _portal_redirect(query: dict, path: str = "") -> str:
 
 
 def _set_auth_cookies(response, access: str, refresh: str) -> None:
-    """Attach http-only auth cookies. Production uses None+Secure for cross-origin SPA fetch."""
+    """Issue paired access/refresh cookies with flags derived from `DEBUG` (SameSite/Secure)."""
+
     if settings.DEBUG:
         secure = False
         samesite = "Lax"
@@ -253,7 +265,8 @@ def _set_auth_cookies(response, access: str, refresh: str) -> None:
 
 
 def _delete_auth_cookies(response) -> None:
-    """Clear auth cookies with matching flags so browsers drop cross-site cookies."""
+    """Expire cookies with attributes matching how they were originally set."""
+
     if settings.DEBUG:
         response.delete_cookie("insighta_access", path="/")
         response.delete_cookie("insighta_refresh", path="/")
@@ -271,7 +284,8 @@ def _delete_auth_cookies(response) -> None:
 
 
 def _perform_refresh_rotation(raw_refresh: str) -> tuple[str, str] | None:
-    """Return (access, refresh) or None if invalid."""
+    """Validate refresh hash, revoke DB row, mint fresh access+refresh via `issue_token_pair`."""
+
     digest = hash_refresh_token(str(raw_refresh).strip())
     now = timezone.now()
     row = (
@@ -296,10 +310,7 @@ def _perform_refresh_rotation(raw_refresh: str) -> tuple[str, str] | None:
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")
 class CsrfCookieView(View):
-    """
-    GET: set `csrftoken` cookie and return the token for X-CSRFToken.
-    Cross-origin SPAs cannot read the cookie via document.cookie; they use `csrfToken` in JSON.
-    """
+    """Bootstrap CSRF for SPAs: Django sets `csrftoken` cookie and returns token JSON."""
 
     def get(self, request):
         token = get_token(request)
@@ -307,7 +318,7 @@ class CsrfCookieView(View):
 
 
 class MeView(APIView):
-    """Current user from JWT (cookie or Bearer)."""
+    """Expose `{id, username, role, ...}` for the currently authenticated JWT subject."""
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -332,10 +343,7 @@ class MeView(APIView):
 
 
 class WebRefreshView(View):
-    """
-    Browser-only refresh: read `insighta_refresh` http-only cookie, rotate, set new cookies.
-    CSRF required (not exempt).
-    """
+    """Rotate refresh token from http-only cookie and re-set both auth cookies (CSRF enforced)."""
 
     def post(self, request):
         raw = request.COOKIES.get("insighta_refresh")
@@ -357,7 +365,7 @@ class WebRefreshView(View):
 
 
 class WebLogoutView(View):
-    """Revoke refresh from cookie and clear auth cookies. CSRF required."""
+    """Revoke active refresh cookie server-side and wipe client cookies."""
 
     def post(self, request):
         raw = request.COOKIES.get("insighta_refresh")
@@ -373,13 +381,7 @@ class WebLogoutView(View):
 
 @method_decorator(csrf_exempt, name="dispatch")
 class GitHubCliExchangeView(APIView):
-    """
-    CLI OAuth uses a separate GitHub OAuth App whose callback is the local listener
-    (INSIGHTA_CLI_OAUTH_REDIRECT, e.g. http://127.0.0.1:8765/callback).
-
-    After GitHub redirects to that URL with ?code=, the CLI POSTs here with code_verifier
-    and the same redirect_uri used in the authorize request.
-    """
+    """Accept CLI loopback OAuth result: exchange `code` posted with PKCE verifier."""
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -442,7 +444,7 @@ class GitHubCliExchangeView(APIView):
 
 @method_decorator(csrf_exempt, name="dispatch")
 class RefreshTokenView(APIView):
-    """Rotate refresh token: old refresh invalidated immediately; new pair returned."""
+    """Non-browser refresh: `{ "refresh_token": "..." }` body returns a rotated pair."""
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -467,7 +469,7 @@ class RefreshTokenView(APIView):
 
 @method_decorator(csrf_exempt, name="dispatch")
 class LogoutView(APIView):
-    """Revoke one refresh token (server-side)."""
+    """JSON logout: revoke hashed refresh row if it still exists (idempotent)."""
 
     authentication_classes: list = []
     permission_classes = [AllowAny]

@@ -1,24 +1,26 @@
-"""Rate limiting and request logging middleware."""
+"""IP buckets for `/auth/*` plus structured request logging.
+
+`/api/*` deliberately skips here because DRF throttles run after JWT resolves the user.
+"""
 
 from __future__ import annotations
 
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
 from typing import Callable
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# In-memory rate limit store 
-_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_rate_limit_store: dict[str, list[float]] = defaultdict(
+    list
+)  # RAM-only; resets per process — pair with Redis for multi-node hard limits
 
 
 def _is_drf_auth_burst_path(p: str) -> bool:
-    """Paths handled by DRF + AuthBurstThrottle (skip duplicate middleware limit)."""
+    """Whether this URL already has matching AuthBurstThrottle limits inside DRF."""
     if p == "/auth/me" or p.startswith("/auth/me/"):
         return True
     if p == "/auth/github/cli" or p.startswith("/auth/github/cli/"):
@@ -35,16 +37,16 @@ def _is_drf_auth_burst_path(p: str) -> bool:
 
 
 def _get_rate_limit_key(request: HttpRequest, p: str) -> tuple[str, int, int]:
-    """Return (key, limit, window_seconds). Empty key skips limiting."""
-    # /api/* is throttled in DRF after JWT auth (per-user).
+    """Return `(redis_key, max_hits, window_secs)`; empty key means this middleware skips."""
+    # Match TRD: authenticated /api traffic is throttled per user inside DRF, not by IP here.
     if p == "/api" or p.startswith("/api/"):
         return "", 0, 0
-    # Browser OAuth callback: many redirects in one flow — do not tighten here.
+    # Browser OAuth redirects can spike; GitHub/browser handle abuse — do not 429 locally.
     if p in (
         "/auth/github/callback",
     ):
         return "", 0, 0
-    # Same burst policy as middleware for remaining /auth/* (OAuth redirect, web cookie routes).
+    # Remaining /auth/* JSON endpoints share the same burst policy as DRF throttles.
     if _is_drf_auth_burst_path(p):
         return "", 0, 0
     if p.startswith("/auth"):
@@ -54,7 +56,7 @@ def _get_rate_limit_key(request: HttpRequest, p: str) -> tuple[str, int, int]:
 
 
 def _check_rate_limit(key: str, limit: int, window: int) -> bool:
-    """Return True if under limit, False if exceeded."""
+    """Sliding-window counter: True if request should proceed, False if budget exhausted."""
     now = time.time()
     cutoff = now - window
     _rate_limit_store[key] = [ts for ts in _rate_limit_store[key] if ts > cutoff]
@@ -65,6 +67,8 @@ def _check_rate_limit(key: str, limit: int, window: int) -> bool:
 
 
 class RateLimitMiddleware:
+    """Return 429 JSON when anonymous `/auth/*` traffic exceeds configured windows."""
+
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]):
         self.get_response = get_response
 
@@ -80,6 +84,8 @@ class RateLimitMiddleware:
 
 
 class RequestLoggingMiddleware:
+    """Emit concise structured INFO lines (`method/path/status/duration/user_id`)."""
+
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]):
         self.get_response = get_response
 

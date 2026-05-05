@@ -1,4 +1,5 @@
-"""Insighta Labs+ users and refresh tokens (OAuth-only; no local passwords)."""
+"""Insighta accounts: GitHub-backed users, hashed refresh tokens, ephemeral OAuth state."""
+
 
 from __future__ import annotations
 
@@ -8,11 +9,15 @@ from classify.uuid7 import new_uuid7
 
 
 class UserRole(models.TextChoices):
+    """RBAC labels stored as short strings on `User.role`."""
+
     ADMIN = "admin", "admin"
     ANALYST = "analyst", "analyst"
 
 
 class User(models.Model):
+    """OAuth-linked identity; primary key doubles as JWT `sub` claim (UUID string)."""
+
     id = models.UUIDField(primary_key=True, default=new_uuid7, editable=False)
     github_id = models.CharField(max_length=64, unique=True, db_index=True)
     username = models.CharField(max_length=255, unique=True)
@@ -41,7 +46,7 @@ class User(models.Model):
 
 
 class RefreshToken(models.Model):
-    """Opaque refresh token stored as SHA-256 hash; raw value is shown once to the client."""
+    """Server-side refresh ledger — raw token is never stored, only SHA-256 `token_hash`."""
 
     id = models.UUIDField(primary_key=True, default=new_uuid7, editable=False)
     user = models.ForeignKey(
@@ -59,7 +64,7 @@ class RefreshToken(models.Model):
 
 
 class GitHubOAuthState(models.Model):
-    """Short-lived PKCE verifier bound to `state` for the browser (server-started) OAuth flow."""
+    """Temporary OAuth row: random `state` param maps to PKCE verifier until exchanged."""
 
     state = models.CharField(max_length=64, primary_key=True)
     code_verifier = models.CharField(max_length=128)

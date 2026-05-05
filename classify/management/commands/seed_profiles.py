@@ -1,4 +1,7 @@
-"""Load or update profiles from seed_profiles.json (idempotent on unique name)."""
+"""Bulk seed/update helper with Postgres-friendly batching and timeout backoff.
+
+Reads `profiles` array (or top-level list) from JSON; matches existing rows by unique `name`.
+"""
 
 import json
 import os
@@ -12,8 +15,7 @@ from classify.models import Profile
 from classify.uuid7 import new_uuid7
 
 BATCH_DEFAULT = 400
-# Deployment Postgres: one INSERT per statement; default to ~10 statements for 2k rows, not 500+.
-# Override with env SEED_POSTGRES_BATCH or --batch (e.g. 200–500 if your host allows it).
+# Hosted Postgres often limits rows per statement — override via `SEED_POSTGRES_BATCH` or `--batch`.
 BATCH_POSTGRES_DEFAULT = 250
 
 _UPDATE_FIELDS = [
@@ -28,6 +30,7 @@ _UPDATE_FIELDS = [
 
 
 def _pg_batch_size(cli_batch: int | None) -> int:
+    """Derive insert/update chunk size from CLI flag or env, capped at 2000 rows."""
     if cli_batch is not None and cli_batch > 0:
         return min(cli_batch, 2000)
     raw = os.environ.get("SEED_POSTGRES_BATCH", str(BATCH_POSTGRES_DEFAULT))
@@ -39,6 +42,7 @@ def _pg_batch_size(cli_batch: int | None) -> int:
 
 
 def _relax_postgres_timeouts() -> None:
+    """Best-effort disable statement/lock timeouts for long seed runs (Postgres only)."""
     if connection.vendor != "postgresql":
         return
     with connection.cursor() as cursor:
@@ -55,6 +59,7 @@ def _bulk_create_adaptive(
     start_batch: int,
     log,
 ) -> None:
+    """Insert new rows using decreasing batch sizes when the database reports timeouts."""
     if not instances:
         return
     if connection.vendor != "postgresql":
@@ -95,6 +100,7 @@ def _bulk_update_adaptive(
     start_batch: int,
     log,
 ) -> None:
+    """Same adaptive strategy as inserts but targeting `bulk_update` field list."""
     if not instances:
         return
     if connection.vendor != "postgresql":
@@ -132,6 +138,8 @@ def _bulk_update_adaptive(
 
 
 class Command(BaseCommand):
+    """Django entrypoint invoked as `manage.py seed_profiles`."""
+
     help = "Seed the database with profiles from seed_profiles.json (re-runs update by name)."
 
     def add_arguments(self, parser) -> None:
@@ -218,7 +226,7 @@ class Command(BaseCommand):
                     )
                 )
 
-        # Do not wrap in transaction.atomic() while using timeout retry — failed statements abort the block.
+        # Each bulk_* call is independent so half-size retries do not poison earlier chunks.
         _bulk_create_adaptive(to_create, start_batch=start_batch, log=self._log)
         _bulk_update_adaptive(to_update, start_batch=start_batch, log=self._log)
 

@@ -1,4 +1,5 @@
-"""RBAC: active users; admin-only mutations."""
+"""DRF permissions: require active users by default; gate destructive APIs to admins."""
+
 
 from __future__ import annotations
 

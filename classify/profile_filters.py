@@ -1,4 +1,7 @@
-"""Shared filter / sort / pagination for profile querysets."""
+"""Shared parsing/validation for `/api/profiles` query strings and queryset composition.
+
+Unknown query keys raise `ValueError` so views can map them to HTTP 422 payloads.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +24,8 @@ ALLOWED_LIST_PARAMS = frozenset(
         "order",
         "page",
         "limit",
-        # DRF reserves it for ?format=json|api and breaks ?format=csv.
-        "export_format",  # export only; ignored by list parser output
+        # `format` conflicts with DRF content negotiation — export uses export_format only.
+        "export_format",
     }
 )
 
@@ -35,6 +38,7 @@ ERR_BAD_REQUEST = "Missing or empty parameter"
 
 
 def _get_first(query_dict: Any, key: str) -> str | None:
+    """Best-effort scalar read (DRF may hand list/tuple values for repeated keys)."""
     v = query_dict.get(key)
     if v is None:
         return None
@@ -45,6 +49,7 @@ def _get_first(query_dict: Any, key: str) -> str | None:
 
 
 def parse_list_query_params(query_dict: Any) -> dict[str, Any]:
+    """Validate/normalize list filters, sort, pagination; max `limit` capped at 50."""
     for k in query_dict.keys():
         if k not in ALLOWED_LIST_PARAMS:
             raise ValueError(ERR_INVALID_QUERY)
@@ -109,6 +114,7 @@ def parse_list_query_params(query_dict: Any) -> dict[str, Any]:
 
 
 def parse_search_query_params(query_dict: Any) -> dict[str, Any]:
+    """Accept only `q`, `page`, `limit` for `/api/profiles/search`."""
     for k in query_dict.keys():
         if k not in ALLOWED_SEARCH_PARAMS:
             raise ValueError(ERR_INVALID_QUERY)
@@ -140,6 +146,7 @@ def parse_search_query_params(query_dict: Any) -> dict[str, Any]:
 def apply_filters(
     qs: QuerySet[Profile], filters: dict[str, Any]
 ) -> QuerySet[Profile]:
+    """AND-combine structured filters understood by NL + classic list endpoints."""
     g = filters.get("gender")
     if g is not None:
         qs = qs.filter(gender__iexact=str(g))
@@ -165,6 +172,8 @@ def apply_filters(
 
 
 def apply_sort(qs: QuerySet[Profile], sort_by: str, order: str) -> QuerySet[Profile]:
+    """Deterministic ordering: primary field (`sort_by`) plus matching `id` tie-break."""
+
     if sort_by == "age":
         f = "age"
     elif sort_by == "created_at":

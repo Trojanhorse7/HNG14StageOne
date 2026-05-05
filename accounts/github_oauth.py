@@ -1,4 +1,7 @@
-"""GitHub OAuth 2.0 authorization code exchange with PKCE (RFC 7636)."""
+"""GitHub OAuth authorize URL builder and token exchange (PKCE RFC 7636).
+
+Split credentials: browser portal uses `GITHUB_CLIENT_*`, CLI uses `GITHUB_CLI_*` only.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ GITHUB_USER_URL = "https://api.github.com/user"
 
 
 def generate_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) using S256."""
+    """Produce verifier + base64url SHA-256 challenge GitHub expects (`S256`)."""
     verifier = secrets.token_urlsafe(48)
     digest = hashlib.sha256(verifier.encode("utf-8")).digest()
     challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
@@ -32,7 +35,7 @@ def build_authorize_url(
     code_challenge: str,
     scope: str = "read:user user:email",
 ) -> str:
-    """Portal flow only — uses GITHUB_CLIENT_ID."""
+    """Compose `https://github.com/login/oauth/authorize` query for the portal GitHub App."""
     cid = (settings.GITHUB_CLIENT_ID or "").strip()
     q = {
         "client_id": cid,
@@ -47,7 +50,7 @@ def build_authorize_url(
 
 
 def _github_oauth_credentials(app: str) -> tuple[str, str]:
-    """Return (client_id, client_secret) for web (portal) or dedicated cli OAuth App."""
+    """Pick client id/secret pair: `web` portal app or `cli` loopback app."""
     if app == "cli":
         cid = getattr(settings, "GITHUB_CLI_CLIENT_ID", "").strip()
         secret = getattr(settings, "GITHUB_CLI_CLIENT_SECRET", "").strip()
@@ -64,10 +67,7 @@ def exchange_code_for_token(
     redirect_uri: str,
     app: str = "web",
 ) -> dict[str, Any]:
-    """POST to GitHub; returns JSON including access_token (GitHub) or raises on error.
-
-    ``web`` uses GITHUB_CLIENT_*; ``cli`` uses GITHUB_CLI_CLIENT_* only (no fallback).
-    """
+    """POST authorization code + PKCE verifier to GitHub and return JSON (`access_token`, ...)."""
     headers = {
         "Accept": "application/json",
     }
@@ -95,6 +95,7 @@ def exchange_code_for_token(
 
 
 def fetch_github_user(github_access_token: str) -> dict[str, Any]:
+    """Call `GET /user` with bearer token to retrieve GitHub profile payload."""
     r = requests.get(
         GITHUB_USER_URL,
         headers={
@@ -109,6 +110,7 @@ def fetch_github_user(github_access_token: str) -> dict[str, Any]:
 
 
 def upsert_user_from_github_profile(data: dict[str, Any]) -> Any:
+    """Create/update `accounts.User` keyed by GitHub numeric id and refresh profile fields."""
     from django.utils import timezone
 
     from accounts.models import User, UserRole

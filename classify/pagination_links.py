@@ -1,4 +1,4 @@
-"""TRD pagination links (relative paths + query string)."""
+"""Build `self` / `next` / `prev` links with stable query string ordering."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 
 def total_pages_count(total: int, limit: int) -> int:
+    """Ceiling division helper shared by list views and serializers."""
     if limit < 1 or total < 1:
         return 0
     return math.ceil(total / limit)
@@ -22,6 +23,7 @@ def build_pagination_links(
     limit: int,
     total: int,
 ) -> dict[str, str | None]:
+    """Return relative URLs honoring active filters while overriding `page`/`limit`."""
     base: dict[str, str] = {}
     for key in sorted(param_keys):
         if key in ("page", "limit"):

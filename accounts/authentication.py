@@ -1,4 +1,7 @@
-"""JWT access via Authorization: Bearer or insighta_access cookie."""
+"""DRF authentication: pull JWT from Bearer header or `insighta_access` cookie.
+
+Missing credentials raise `NotAuthenticated` so anonymous API calls return HTTP 401 per spec.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,10 @@ from accounts.tokens import decode_access_token
 
 
 class JWTAuthentication(BaseAuthentication):
+    """Resolve Django `User` from HS256 access payload (`sub` must match primary key UUID)."""
+
     def authenticate(self, request):
+        """Return `(user, None)` or raise REST auth errors."""
         token = None
         header = request.META.get("HTTP_AUTHORIZATION", "")
         if header.startswith("Bearer "):
@@ -20,7 +26,7 @@ class JWTAuthentication(BaseAuthentication):
         if not token:
             token = request.COOKIES.get("insighta_access")
         if not token:
-            # Force 401 instead of letting DRF return 403 when no credentials provided
+            # No Authorization/cookie: force 401 so anonymous API calls are not treated as 403.
             raise NotAuthenticated("Authentication credentials were not provided.")
 
         payload = decode_access_token(token)
@@ -40,5 +46,5 @@ class JWTAuthentication(BaseAuthentication):
         return (user, None)
 
     def authenticate_header(self, request):
-        """Return WWW-Authenticate header value for 401 responses (DRF requirement)."""
+        """Expose `WWW-Authenticate: Bearer realm="api"` on 401 responses."""
         return 'Bearer realm="api"'

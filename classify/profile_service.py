@@ -1,4 +1,4 @@
-"""Fetch and validate Genderize, Agify, and Nationalize payloads."""
+"""Fetch Genderize/Agify/Nationalize, normalize conflicts, return a typed aggregate."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ NATIONALIZE_URL = "https://api.nationalize.io/"
 
 @dataclass(frozen=True)
 class AggregatedProfile:
+    """Immutable bundle aligned with the persisted `Profile` model fields."""
+
     gender: str
     gender_probability: float
     age: int
@@ -56,8 +58,7 @@ def _fetch_json(url: str, params: dict[str, str], external_api: str):
 
 
 def aggregate_for_name(name: str) -> tuple[AggregatedProfile | None, dict[str, str] | None]:
-    """Return aggregated data or an error dict for JSON response body (HTTP 502)."""
-
+    """Call upstream demographic APIs and either return data or a `{status,message}` 502 body."""
     g_payload, err = _fetch_json(GENDERIZE_URL, {"name": name}, "Genderize")
     if err:
         return None, err

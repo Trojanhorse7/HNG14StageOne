@@ -1,4 +1,5 @@
-"""Normalize DRF errors to { status, message }."""
+"""Map DRF/validation exceptions into `{ "status": "error", "message": str }` bodies."""
+
 
 from __future__ import annotations
 
